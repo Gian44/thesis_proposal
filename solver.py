@@ -1,6 +1,6 @@
 import pandas as pd
-from multiswarm2 import main as multiswarm_optimization  
 import re
+from multiswarm import main as multiswarm_optimization
 
 # Step 1: Parse the .ctt file
 def parse_ctt(file_path):
@@ -67,24 +67,26 @@ def parse_ctt(file_path):
                 if match:
                     constraint = {"course": match.group(1), "day": int(match.group(2)), "period": int(match.group(3))}
                     data["constraints"].append(constraint)
-        
         return data
 
-# Step 2: Run Multi-Swarm Particle Swarm Optimization (MS-PSO)
+# Step 2: Generate Initial Feasible Solutions (Construction Phase)
+def generate_initial_solution(data):
+    from construction_phase import ifs_generate  # Import IFS from the construction phase implementation
+    initial_solution = ifs_generate(data["courses"], data["rooms"], data["num_days"], data["periods_per_day"], data["constraints"], data["curricula"])
+    return initial_solution
+
+# Step 3: Optimize using Multi-Swarm PSO
 def optimize_schedule(data):
-    # Pass parsed data to multiswarm_optimization for use in generating and evaluating schedules
-    schedule = multiswarm_optimization(data, verbose=True) 
-    return schedule
+    optimized_schedule = multiswarm_optimization(data, verbose=True)
+    return optimized_schedule
 
-
-# Step 3: Save Output to .csv and .out files
+# Step 4: Save Output to .csv and .out files
 def save_output(schedule, csv_path, out_path):
     # Convert the schedule to DataFrame for CSV
-    df = pd.DataFrame(schedule)  # Assume schedule is in tabular form with required columns
+    df = pd.DataFrame(schedule)
     df.to_csv(csv_path, index=False)
     
     # Write the output to .out format
-    """Saves the schedule in the specified format to a .out file."""
     with open(out_path, 'w') as f:
         for entry in schedule:
             line = f"{entry['course_id']} {entry['room_id']} {entry['day']} {entry['period']}\n"
@@ -95,8 +97,18 @@ if __name__ == "__main__":
     # Parse the .ctt input file
     ctt_data = parse_ctt("mnt/data/comp01.ctt")
 
-    # Run the optimization algorithm
-    optimized_schedule = optimize_schedule(ctt_data)
+    # Generate initial feasible solution
+    initial_solution = generate_initial_solution(ctt_data)
+    print("Initial Solution Generated")
+    #print(initial_solution)
 
-    # Save the results
-    save_output(optimized_schedule, "mnt/data/comp01_output.csv", "mnt/data/comp01_output.out")
+    # Save the initial solution
+    save_output(initial_solution, "mnt/data/comp01_initial.csv", "mnt/data/comp01_initial.out")
+
+    # Optimize the solution using Multi-Swarm PSO
+    #optimized_solution = optimize_schedule(ctt_data)
+    #print("Optimized Solution:")
+    #print(optimized_solution)
+
+    # Save the optimized solution
+    #save_output(optimized_solution, "mnt/data/comp01_optimized.csv", "mnt/data/comp01_optimized.out")
