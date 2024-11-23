@@ -16,7 +16,7 @@ def backtrack(schedule, used_slots, teacher_schedule, curriculum_schedule, unass
 
     conflicts = []
     if best_value:
-        # The best candidate slot that caused the backtracking
+        print("The best value is: " + str(best_value))
         room, day, period = best_value
 
         # Find courses in conflict with this slot
