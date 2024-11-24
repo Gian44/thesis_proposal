@@ -1,1 +1,0 @@
-Input problem instances of Track 3: Curriculum based Course Timetabling (CTT) downloaded from http://www.cs.qub.ac.uk/itc2007/postenrolcourse/course_post_index_files/instances.htm

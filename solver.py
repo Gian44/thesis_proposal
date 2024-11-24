@@ -71,8 +71,8 @@ def parse_ctt(file_path):
 
 # Step 2: Generate Initial Feasible Solutions (Construction Phase)
 def generate_initial_solution(data):
-    from construction_phase import ifs_generate  # Import IFS from the construction phase implementation
-    initial_solution = ifs_generate(data["courses"], data["rooms"], data["num_days"], data["periods_per_day"], data["constraints"], data["curricula"])
+    from initialize_population import assign_courses  # Import IFS from the construction phase implementation
+    initial_solution = assign_courses()
     return initial_solution
 
 # Step 3: Optimize using Multi-Swarm PSO
@@ -98,17 +98,23 @@ if __name__ == "__main__":
     ctt_data = parse_ctt("mnt/data/comp01.ctt")
 
     # Generate initial feasible solution
-    initial_solution = generate_initial_solution(ctt_data)
-    print("Initial Solution Generated")
+    timetable = generate_initial_solution(ctt_data)
+    #print("Initial Solution Generated")
     #print(initial_solution)
+    with open("output/initial_solution.out", "w") as file:  # Open the file in write mode
+            for day in timetable:
+                for period in timetable[day]:
+                    for room in timetable[day][period]:
+                        if timetable[day][period][room] != -1:
+                            file.write(f"{timetable[day][period][room]} {room} {day} {period}\n")
 
     # Save the initial solution
-    save_output(initial_solution, "mnt/data/comp01_initial.csv", "mnt/data/comp01_initial.out")
+    #save_output(initial_solution, "mnt/data/solution.csv", "mnt/data/solution.out")
 
     # Optimize the solution using Multi-Swarm PSO
-    #optimized_solution = optimize_schedule(ctt_data)
+    optimized_solution = optimize_schedule(ctt_data)
     #print("Optimized Solution:")
     #print(optimized_solution)
 
     # Save the optimized solution
-    #save_output(optimized_solution, "mnt/data/comp01_optimized.csv", "mnt/data/comp01_optimized.out")
+    save_output(optimized_solution, "mnt/data/comp01_optimized.csv", "mnt/data/comp01_optimized.out")

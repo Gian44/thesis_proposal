@@ -1,39 +1,25 @@
 import random
 from collections import defaultdict
 
-def backtrack(schedule, used_slots, teacher_schedule, curriculum_schedule, unassigned_schedule, domains, cbs, courses, curricula, constraints, best_value):
+def backtrack(schedule, used_slots, teacher_schedule, curriculum_schedule, unassigned_schedule, domains, courses, curricula, constraints, course_id, best_value, lecture_counts):
     """
-    Backtracking mechanism with Conflict-Based Statistics (CBS) to handle conflicts dynamically.
-    Focuses only on courses conflicting with the problematic course's best candidate slot.
+    Backtracking mechanism to handle conflicts dynamically.
     """
-    if not unassigned_schedule:
-        raise Exception("[ERROR] Backtracking failed - no solution possible.")
+    if not best_value:
+        raise Exception("[ERROR] No best value provided for backtracking.")
 
-    # Select the next course to process from the list of unassigned courses
-    course_id = unassigned_schedule.pop(0)
+    print(f"[DEBUG] Backtracking initiated for Course {course_id} with Best Value {best_value}")
 
-    print(f"[DEBUG] Backtracking initiated for Course {course_id}")
-
+    room, day, period = best_value
     conflicts = []
-    if best_value:
-        print("The best value is: " + str(best_value))
-        room, day, period = best_value
 
-        # Find courses in conflict with this slot
-        for entry in schedule:
-            if has_conflict(entry, {"room_id": room, "day": day, "period": period, "course_id": course_id},
-                            constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
-                conflicts.append(entry)
-    else:
-        # If no `best_value`, fallback to removing all courses that conflict with the problematic course
-        for entry in schedule:
-            if has_conflict(entry, course_id, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
-                conflicts.append(entry)
+    # Find conflicting courses based on best_value
+    proposed_assignment = {"room_id": room, "day": day, "period": period, "course_id": course_id}
+    for entry in schedule:
+        if has_conflict(entry, proposed_assignment, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
+            conflicts.append(entry)
 
-    # Sort conflicts based on CBS (higher conflict frequency first)
-    conflicts.sort(key=lambda conflict: cbs[(conflict["course_id"], (conflict["room_id"], conflict["day"], conflict["period"]))], reverse=True)
-
-    # Remove only the conflicting courses from the schedule
+    # Remove conflicting courses
     for conflict in conflicts:
         schedule.remove(conflict)
         used_slots.discard((conflict["room_id"], conflict["day"], conflict["period"]))
@@ -44,31 +30,30 @@ def backtrack(schedule, used_slots, teacher_schedule, curriculum_schedule, unass
         for curriculum_id in curriculum_ids:
             curriculum_schedule[curriculum_id].discard((conflict["day"], conflict["period"]))
 
-        # Add the conflicting course back to the unassigned list
-        unassigned_schedule.append(conflict["course_id"])
+        # Re-add conflicting course to unassigned_schedule if its required lectures aren't fully assigned
+        lecture_counts[conflict["course_id"]] -= 1  # Adjust lecture count for removed assignment
+        if lecture_counts[conflict["course_id"]] < next(course["num_lectures"] for course in courses if course["id"] == conflict["course_id"]):
+            unassigned_schedule.append(conflict["course_id"])
+            print(f"[DEBUG] Removed conflicting Course {conflict['course_id']} from the schedule and re-added to unassigned.")
 
-        # Update CBS for this conflict
-        cbs[(conflict["course_id"], (conflict["room_id"], conflict["day"], conflict["period"]))] += 1
-
-        print(f"[DEBUG] Removed conflicting Course {conflict['course_id']} from the schedule")
-
-    # Add the problematic course back to unassigned_schedule to retry its assignment later
-    unassigned_schedule.append(course_id)
-    print(f"[DEBUG] Course {course_id} added back to the unassigned list for reassignment")
+    # Re-add the problematic course only if it hasn't reached its required lectures
+    if lecture_counts[course_id] < next(course["num_lectures"] for course in courses if course["id"] == course_id):
+        unassigned_schedule.append(course_id)
+        print(f"[DEBUG] Problematic Course {course_id} added back to the unassigned list.")
 
     # Debugging the count of unassigned slots
     print(f"[DEBUG] Number of unassigned slots after backtracking: {len(unassigned_schedule)}")
 
 def ifs_generate(courses, rooms, num_days, periods_per_day, constraints, curricula):
     """
-    Iterative Forward Search (IFS) with Conflict-Based Statistics (CBS) and Backtracking 
-    to generate a feasible initial schedule that satisfies all hard constraints.
+    Iterative Forward Search (IFS) to generate a feasible initial schedule.
     """
     schedule = []
     used_slots = set()  # Track (room, day, period) to avoid conflicts
     curriculum_schedule = defaultdict(set)  # Tracks (day, period) for each curriculum
     teacher_schedule = defaultdict(set)  # Tracks (day, period) for each teacher
-    cbs = defaultdict(int)  # Conflict-based statistics (CBS) to guide value selection
+    cbs = defaultdict(int)  # Conflict-based statistics
+    lecture_counts = {course["id"]: 0 for course in courses}  # Track assigned lectures
 
     # Precompute domains for each course
     domains = {
@@ -83,6 +68,7 @@ def ifs_generate(courses, rooms, num_days, periods_per_day, constraints, curricu
 
     # List of unassigned courses
     unassigned_schedule = [course["id"] for course in courses for _ in range(course["num_lectures"])]
+
     print("[DEBUG] Starting Iterative Forward Search (IFS)...")
 
     while unassigned_schedule:
@@ -91,47 +77,22 @@ def ifs_generate(courses, rooms, num_days, periods_per_day, constraints, curricu
         print(f"[DEBUG] Assigning Course {course_id}. Remaining unassigned: {len(unassigned_schedule)}")
 
         # Step 2: Value Selection
-        best_value = None
-        min_violations = float('inf')
-        candidate_values = []
-
-        # Filter only unused slots for this course
-        for room, day, period in domains[course_id]:
-            if (room, day, period) in used_slots:
-                continue  # Skip slots that are already used
-
-            # Check hard constraint violations if this value is assigned
-            violations = calculate_hard_constraints(
-                course_id,
-                [(room, day, period)],
-                constraints,
-                curriculum_schedule,
-                teacher_schedule,
-                used_slots,
-                courses,
-                curricula
+        best_value, min_violations = select_value(
+            course_id, domains, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula, cbs
+        )
+        print("MIN_VIOLATION:" + str(min_violations))
+        # If no valid value found, initiate backtracking
+        if not best_value or min_violations > 0:
+            print(f"[DEBUG] No feasible value for Course {course_id}. Initiating backtracking...")
+            backtrack(
+                schedule, used_slots, teacher_schedule, curriculum_schedule, unassigned_schedule,
+                domains, courses, curricula, constraints, course_id, best_value, lecture_counts
             )
-
-            if violations < min_violations:
-                min_violations = violations
-                candidate_values = [(room, day, period)]
-            elif violations == min_violations:
-                candidate_values.append((room, day, period))
-
-        best_value = random.choice(candidate_values)
-        if not candidate_values or min_violations > 0:
-            print(f"[DEBUG] No feasible value for Course {course_id} or violations > 0. Initiating backtracking...")
-            unassigned_schedule.append(course_id)  # Add back to the unassigned list for retrying
-            backtrack(schedule, used_slots, teacher_schedule, curriculum_schedule, unassigned_schedule,
-                      domains, cbs, courses, curricula, constraints, best_value)
-            continue  # Restart the while loop after backtracking
-
-        # Randomly break ties among the best candidate values
-        best_value = random.choice(candidate_values)
-        room, day, period = best_value
-        print(f"[DEBUG] Assigning Course {course_id} to Room {room}, Day {day}, Period {period}")
+            continue
 
         # Assign the selected value
+        room, day, period = best_value
+        print(f"[DEBUG] Assigning Course {course_id} to Room {room}, Day {day}, Period {period}")
         schedule.append({
             "course_id": course_id,
             "room_id": room,
@@ -148,8 +109,68 @@ def ifs_generate(courses, rooms, num_days, periods_per_day, constraints, curricu
         for curriculum_id in curriculum_ids:
             curriculum_schedule[curriculum_id].add((day, period))
 
+        # Increment lecture count and ensure the course is not re-added to unassigned_schedule
+        lecture_counts[course_id] += 1
+        if lecture_counts[course_id] >= next(course["num_lectures"] for course in courses if course["id"] == course_id):
+            print(f"[DEBUG] Course {course_id} fully assigned. Skipping reassignment.")
+
+        print(f"[DEBUG] Remaining unassigned schedule: {unassigned_schedule}")
+
     print("[DEBUG] Iterative Forward Search completed successfully.")
     return schedule
+
+
+def select_variable(unassigned, domains, constraints, curriculum_schedule, teacher_schedule, used_slots, curricula, courses):
+    """
+    Selects the next variable (course) to assign based on difficulty.
+    """
+    return min(
+        unassigned,
+        key=lambda course_id: (
+            len(domains[course_id]),  # Smaller domains are prioritized
+            calculate_hard_constraints(course_id, domains[course_id], constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula)
+        )
+    )
+
+
+def select_value(course_id, domains, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula, cbs):
+    """
+    Select the best value to assign to a course. If the best value results in violations,
+    the calling function should trigger backtracking.
+    """
+    candidate_values = []
+    min_violations = float('inf')
+
+    # Evaluate all possible values in the domain
+    for room, day, period in domains[course_id]:
+        if (room, day, period) in used_slots:
+            continue  # Skip already-used slots
+
+        # Calculate violations for this value
+        violations = calculate_hard_constraints(
+            course_id, [(room, day, period)], constraints,
+            curriculum_schedule, teacher_schedule, used_slots, courses, curricula
+        )
+
+        # Include Conflict-Based Statistics (CBS) to penalize repetitive conflicts
+        violations += cbs[(course_id, (room, day, period))]
+
+        # Track the best candidate values
+        if violations < min_violations:
+            min_violations = violations
+            candidate_values = [(room, day, period)]
+        elif violations == min_violations:
+            candidate_values.append((room, day, period))
+
+    if candidate_values:
+        # Select one of the best candidates randomly
+        best_value = random.choice(candidate_values)
+        print(f"[DEBUG] Best value for Course {course_id} is {best_value} with {min_violations} violations.")
+        return best_value, min_violations
+    else:
+        print(f"[ERROR] No valid values found for Course {course_id}.")
+        return None, float('inf')
+
 
 def calculate_hard_constraints(course_id, candidate_values, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
     """
@@ -163,7 +184,7 @@ def calculate_hard_constraints(course_id, candidate_values, constraints, curricu
         # Room occupancy: No two lectures in the same room at the same time
         if (room, day, period) in used_slots:
             violations += 1
-            print(f"[DEBUG] Conflict: Room {room} already used at Day {day}, Period {period}")
+            #print(f"[DEBUG] Conflict: Room {room} already used at Day {day}, Period {period}")
 
         # Curriculum conflicts: No two lectures in the same curriculum can share the same time slot
         curriculum_ids = [
@@ -172,59 +193,72 @@ def calculate_hard_constraints(course_id, candidate_values, constraints, curricu
         for curriculum_id in curriculum_ids:
             if (day, period) in curriculum_schedule[curriculum_id]:
                 violations += 1
-                print(f"[DEBUG] Conflict: Curriculum {curriculum_id} has a conflict at Day {day}, Period {period}")
+                #print(f"[DEBUG] Conflict: Curriculum {curriculum_id} has a conflict at Day {day}, Period {period}")
 
         # Teacher availability: No teacher can teach multiple lectures at the same time
         teacher = get_teacher(courses, course_id)
         if (day, period) in teacher_schedule[teacher]:
             violations += 1
-            print(f"[DEBUG] Conflict: Teacher {teacher} already scheduled at Day {day}, Period {period}")
+            #print(f"[DEBUG] Conflict: Teacher {teacher} already scheduled at Day {day}, Period {period}")
 
         # Unavailability constraints: Course must not be assigned to unavailable slots
         for constraint in constraints:
             if constraint["course"] == course_id and constraint["day"] == day and constraint["period"] == period:
                 violations += 1
-                print(f"[DEBUG] Conflict: Unavailability for Course {course_id} at Day {day}, Period {period}")
+                #print(f"[DEBUG] Conflict: Unavailability for Course {course_id} at Day {day}, Period {period}")
 
     return violations
 
 
-def has_conflict(entry, course_id, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
+def has_conflict(entry, proposed_assignment, constraints, curriculum_schedule, teacher_schedule, used_slots, courses, curricula):
     """
-    Determine if an assigned lecture conflicts with a specific course based on hard constraints.
+    Determine if an assigned lecture (entry) conflicts with the proposed assignment of the problematic course.
+
+    Args:
+        entry (dict): A scheduled course (already assigned).
+        proposed_assignment (dict): Proposed assignment of the problematic course {room_id, day, period, course_id}.
     """
-    room, day, period = entry["room_id"], entry["day"], entry["period"]
+    # Extract details of the proposed assignment
+    proposed_room = proposed_assignment["room_id"]
+    proposed_day = proposed_assignment["day"]
+    proposed_period = proposed_assignment["period"]
+    proposed_course = proposed_assignment["course_id"]
 
-    #print(f"[DEBUG] Checking conflicts for Course {course_id} against Entry: Room {room}, Day {day}, Period {period}")
+    # Extract details of the current scheduled course
+    scheduled_room = entry["room_id"]
+    scheduled_day = entry["day"]
+    scheduled_period = entry["period"]
+    scheduled_course = entry["course_id"]
 
-    # Check room occupancy conflict
-    if (room, day, period) in used_slots:
-        #print(f"[DEBUG] Conflict detected: Room {room} occupied at Day {day}, Period {period}")
+    # Room occupancy: Same room, day, and period
+    if proposed_room == scheduled_room and proposed_day == scheduled_day and proposed_period == scheduled_period:
         return True
 
-    # Check curriculum conflict
-    curriculum_ids = [
-        curriculum["id"] for curriculum in curricula if entry["course_id"] in curriculum["courses"]
+    # Curriculum conflict: Check if the courses share curricula and overlap in time
+    scheduled_curricula = [
+        curriculum["id"] for curriculum in curricula if scheduled_course in curriculum["courses"]
     ]
-    for curriculum_id in curriculum_ids:
-        if (day, period) in curriculum_schedule[curriculum_id]:
-            #print(f"[DEBUG] Conflict detected: Curriculum {curriculum_id} conflict at Day {day}, Period {period}")
-            return True
-
-    # Check teacher conflict
-    teacher = get_teacher(courses, entry["course_id"])
-    if (day, period) in teacher_schedule[teacher]:
-        #print(f"[DEBUG] Conflict detected: Teacher {teacher} conflict at Day {day}, Period {period}")
+    proposed_curricula = [
+        curriculum["id"] for curriculum in curricula if proposed_course in curriculum["courses"]
+    ]
+    # If any curricula overlap and timeslots match, it's a conflict
+    if any(curriculum_id in scheduled_curricula for curriculum_id in proposed_curricula) and \
+       scheduled_day == proposed_day and scheduled_period == proposed_period:
         return True
 
-    # Check unavailability constraint
+    # Teacher availability: Check if the same teacher is teaching both courses at the same time
+    scheduled_teacher = get_teacher(courses, scheduled_course)
+    proposed_teacher = get_teacher(courses, proposed_course)
+    if scheduled_teacher == proposed_teacher and scheduled_day == proposed_day and scheduled_period == proposed_period:
+        return True
+
+    # Unavailability constraints: Check if the proposed course violates its unavailability
     for constraint in constraints:
-        if constraint["course"] == entry["course_id"] and constraint["day"] == day and constraint["period"] == period:
-            #print(f"[DEBUG] Conflict detected: Unavailability constraint for Course {entry['course_id']} at Day {day}, Period {period}")
+        if constraint["course"] == proposed_course and constraint["day"] == proposed_day and constraint["period"] == proposed_period:
             return True
 
-    print(f"[DEBUG] No conflict detected for Course {course_id} against Entry: Room {room}, Day {day}, Period {period}")
     return False
+
 
 def get_teacher(courses, course_id):
     """

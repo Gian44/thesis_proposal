@@ -2,6 +2,8 @@ import itertools
 import math
 import random
 from deap import base, creator, tools
+from initialize_population import assign_courses
+from functools import partial
 import operator
 
 # Initialize globals for course and room data, which will be set in main()
@@ -14,181 +16,411 @@ creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
 creator.create("Particle", list, fitness=creator.FitnessMin, speed=list, best=None, bestfit=None)
 creator.create("Swarm", list, best=None, bestfit=None)
 
-# Constraint-Based Statistic (CBS): Evaluates conflicts for a given time slot
-def cbs(day, period, room, course, room_schedule, teacher_schedule):
-    score = 0
-    teacher = course["teacher"]
+# Generate a particle (schedule) using Graph Based
+def generate(pclass):
+    schedule = assign_courses()  # Generate the initial timetable
+    particle = []
 
-    # Room conflict
-    if (room, day, period) in room_schedule:
-        score += 1
-
-    # Teacher conflict
-    if teacher in teacher_schedule and (day, period) in teacher_schedule[teacher]:
-        score += 1
-
-    return score
-
-# Iterative Forward Search (IFS): Generate feasible initial solutions
-def ifs_generate(courses, rooms, days, periods):
-    schedule = []
-    room_schedule = {}
-    teacher_schedule = {}
-
-    for course in courses:
-        num_lectures = course.get("num_lectures", 1)
-        for _ in range(num_lectures):
-            best_slot = None
-            best_score = float("inf")
-
-            for room in rooms:
-                for day in range(days):
-                    for period in range(periods):
-                        score = cbs(day, period, room["id"], course, room_schedule, teacher_schedule)
-                        if score < best_score:
-                            best_score = score
-                            best_slot = (room["id"], day, period)
-
-            if best_slot:
-                room, day, period = best_slot
-                schedule.append({
-                    "course_id": course["id"],
-                    "room_id": room,
-                    "day": day,
-                    "period": period
-                })
-                room_schedule[(room, day, period)] = course["id"]
-                teacher = course["teacher"]
-                if teacher not in teacher_schedule:
-                    teacher_schedule[teacher] = []
-                teacher_schedule[teacher].append((day, period))
-            else:
-                raise ValueError(f"Unable to find a feasible slot for course {course['id']}.")
-
-    return schedule
-
-# Generate a particle (schedule) using IFS
-def generate(pclass, courses, rooms, days, periods):
-    schedule = ifs_generate(courses, rooms, days, periods)
-    return pclass(schedule)
+    for day, periods in schedule.items():
+        for period, rooms in periods.items():
+            for room, course_id in rooms.items():
+                if course_id != -1:  # Skip empty slots
+                    particle.append({
+                        "day": day,
+                        "period": period,
+                        "room_id": room,
+                        "course_id": course_id
+                    })
+    return pclass(particle)
 
 # Evaluate a particle (schedule) for soft constraint penalties
-def evaluate_schedule(schedule):
-    # Soft constraint penalties
+def evaluate_schedule(particle, rooms, courses, curricula, constraints):
+    """
+    Evaluates the fitness of a particle by calculating the penalties
+    for both soft and hard constraints.
+
+    Args:
+        particle (list): The schedule (particle) to evaluate.
+        rooms (list): List of rooms with their capacities.
+        courses (list): List of courses with their details.
+        curricula (list): List of curricula and their courses.
+        constraints (list): Hard constraints.
+
+    Returns:
+        tuple: A single fitness value combining penalties for hard and soft constraints.
+    """
+    # Initialize penalties
+    hard_constraint_penalty = 0
+
+    # Initialize schedules for validation
+    room_schedule = {}
+    curriculum_schedule = {}
+    teacher_schedule = {}
+
+    # HARD CONSTRAINTS
+    for entry in particle:
+        course_id = entry['course_id']
+        room_id = entry['room_id']
+        day = entry['day']
+        period = entry['period']
+        course = next((c for c in courses if c["id"] == course_id), None)
+        room = next((r for r in rooms if r["id"] == room_id), None)
+        curriculum = next((curr for curr in curricula if course_id in curr["courses"]), None)
+        teacher = course["teacher"] if course else None
+
+        if course is None or room is None:
+            raise ValueError(f"Invalid course_id {course_id} or room_id {room_id}")
+
+        # Room conflict
+        if (room_id, day, period) in room_schedule:
+            hard_constraint_penalty += 5000
+        else:
+            room_schedule[(room_id, day, period)] = course_id
+
+        # Room capacity
+        if course["num_students"] > room["capacity"]:
+            hard_constraint_penalty += 5000
+
+        # Curriculum conflict
+        if curriculum:
+            if curriculum["id"] not in curriculum_schedule:
+                curriculum_schedule[curriculum["id"]] = []
+            for (scheduled_day, scheduled_period) in curriculum_schedule[curriculum["id"]]:
+                if scheduled_day == day and scheduled_period == period:
+                    hard_constraint_penalty += 5000
+            curriculum_schedule[curriculum["id"]].append((day, period))
+
+        # Teacher conflict
+        if teacher not in teacher_schedule:
+            teacher_schedule[teacher] = []
+        for (scheduled_day, scheduled_period) in teacher_schedule[teacher]:
+            if scheduled_day == day and scheduled_period == period:
+                hard_constraint_penalty += 5000
+        teacher_schedule[teacher].append((day, period))
+
+    # Unavailability constraints
+    for constraint in constraints:
+        for entry in particle:
+            if (constraint["course"] == entry["course_id"] and
+                constraint["day"] == entry["day"] and
+                constraint["period"] == entry["period"]):
+                hard_constraint_penalty += 5000
+    # Initialize penalties
     room_capacity_utilization_penalty = 0
     min_days_violation_penalty = 0
     curriculum_compactness_penalty = 0
     room_stability_penalty = 0
 
+    # Validate rooms
+    if not isinstance(rooms, list) or not all(isinstance(r, dict) for r in rooms):
+        raise ValueError("Rooms variable must be a list of dictionaries with 'id' and 'capacity' keys.")
+
+    # Convert particle into a timetable-like structure
+    timetable = {}
+    for entry in particle:
+        day = entry["day"]
+        period = entry["period"]
+        room = entry["room_id"]
+        course_id = entry["course_id"]
+
+        if day not in timetable:
+            timetable[day] = {}
+        if period not in timetable[day]:
+            timetable[day][period] = {}
+        timetable[day][period][room] = course_id
+
+    # Track course assignments and days used
+    course_assignments = {course["id"]: [] for course in courses}
+
+    for day, periods in timetable.items():
+        for period, rooms_in_period in periods.items():
+            for room, course_id in rooms_in_period.items():
+                if course_id == -1:  # Skip empty slots
+                    continue
+                course_assignments[course_id].append({"day": day, "period": period, "room_id": room})
+
+    # Evaluate penalties for each course
     for course in courses:
-        assigned_periods = [entry for entry in schedule if entry["course_id"] == course["id"]]
-        days_used = {entry["day"] for entry in assigned_periods}
+        course_id = course["id"]
+        assignments = course_assignments[course_id]
 
-        # Room capacity utilization
-        for entry in assigned_periods:
-            room = next((r for r in rooms if r["id"] == entry["room_id"]), None)
-            if course["num_students"] > room["capacity"]:
-                room_capacity_utilization_penalty += (course["num_students"] - room["capacity"])
+        # Room Capacity Penalty
+        for assignment in assignments:
+            room = assignment["room_id"]
+            room_details = next((r for r in rooms if r["id"] == room), None)
+            if room_details and course["num_students"] > room_details["capacity"]:
+                room_capacity_utilization_penalty += (course["num_students"] - room_details["capacity"])
 
-        # Minimum working days
+        # Minimum Working Days Penalty
+        days_used = {assignment["day"] for assignment in assignments}
         if len(days_used) < course["min_days"]:
             min_days_violation_penalty += 5 * (course["min_days"] - len(days_used))
 
-        # Curriculum compactness
-        for day in days_used:
-            day_periods = sorted(entry["period"] for entry in assigned_periods if entry["day"] == day)
-            for i in range(1, len(day_periods)):
-                if day_periods[i] != day_periods[i - 1] + 1:
-                    curriculum_compactness_penalty += 2
-
-        # Room stability
-        rooms_used = {entry["room_id"] for entry in assigned_periods}
-        if len(rooms_used) > 1:
+        # Room Stability Penalty
+        rooms_used = {assignment["room_id"] for assignment in assignments}
+        if len(rooms_used) > 1:  # More than one room used
             room_stability_penalty += (len(rooms_used) - 1)
 
+    # Curriculum Compactness Penalty
+    for curriculum in curricula:
+        curriculum_courses = curriculum["courses"]
+        curriculum_assignments = [
+            assignment
+            for course_id in curriculum_courses
+            for assignment in course_assignments[course_id]
+        ]
+        curriculum_assignments.sort(key=lambda x: (x["day"], x["period"]))  # Sort by day and period
+        for i in range(1, len(curriculum_assignments)):
+            current = curriculum_assignments[i]
+            previous = curriculum_assignments[i - 1]
+            if current["day"] == previous["day"] and current["period"] != previous["period"] + 1:
+                curriculum_compactness_penalty += 2  # Non-adjacent lectures in the same day
+
+    # Calculate total penalty
     total_penalty = (
         room_capacity_utilization_penalty +
         min_days_violation_penalty +
         curriculum_compactness_penalty +
-        room_stability_penalty
+        room_stability_penalty +
+        hard_constraint_penalty
     )
 
     return (total_penalty,)
+
 toolbox = base.Toolbox()
+
+def nl_move(data, schedule, constraints, courses, curricula):
+    """
+    Perform a move operation by randomly reassigning a course to a new valid slot.
+    """
+    new_schedule = toolbox.clone(schedule)
+    for entry in new_schedule:
+        # Randomly select a course
+        selected_entry = random.choice(new_schedule)
+        proposed_day = random.randint(0, data["num_days"] - 1)
+        proposed_period = random.randint(0, data["periods_per_day"] - 1)
+        proposed_room = random.choice(data["rooms"])["id"]
+
+        # Save original position for revert
+        original_day, original_period, original_room = selected_entry["day"], selected_entry["period"], selected_entry["room_id"]
+
+        # Apply the move
+        selected_entry["day"], selected_entry["period"], selected_entry["room_id"] = proposed_day, proposed_period, proposed_room
+
+        # Check feasibility
+        if is_feasible(new_schedule, constraints, courses, curricula):
+            return new_schedule  # Return the new feasible schedule
+        else:
+            # Revert if infeasible
+            selected_entry["day"], selected_entry["period"], selected_entry["room_id"] = original_day, original_period, original_room
+    return schedule  # Return original schedule if no valid move is found
+
+def nl_swap(schedule, constraints, courses, curricula):
+    """
+    Perform a swap operation by exchanging the timeslots of two courses.
+    """
+    new_schedule = toolbox.clone(schedule)
+    entry1, entry2 = random.sample(new_schedule, 2)  # Select two random lectures
+    
+    # Save the original state for both entries
+    entry1_day, entry1_period, entry1_room = entry1["day"], entry1["period"], entry1["room_id"]
+    entry2_day, entry2_period, entry2_room = entry2["day"], entry2["period"], entry2["room_id"]
+
+    # Swap their assignments
+    entry1["day"], entry1["period"], entry1["room_id"] = entry2_day, entry2_period, entry2_room
+    entry2["day"], entry2["period"], entry2["room_id"] = entry1_day, entry1_period, entry1_room
+
+    # Check feasibility
+    if is_feasible(new_schedule, constraints, courses, curricula):
+        return new_schedule  # Return the new feasible schedule
+    else:
+        # Revert the swap if infeasible
+        entry1["day"], entry1["period"], entry1["room_id"] = entry1_day, entry1_period, entry1_room
+        entry2["day"], entry2["period"], entry2["room_id"] = entry2_day, entry2_period, entry2_room
+    return schedule  # Return original schedule if no valid swap is found
+
 
 def updateParticle(data, part, personal_best, global_best, chi, c1, c2, constraints):
     """
-    Updates a particle's position based on its velocity and resolves conflicts using swap-based heuristic.
+    Updates a particle's velocity and applies it to modify the schedule.
+    Uses neighborhood operations for local search.
     """
     for i, entry in enumerate(part):
         r1, r2 = random.random(), random.random()
 
-        # Fallback to the current entry if personal_best or global_best is None
+        # Get the best positions from personal and global bests
         best_entry = personal_best[i] if personal_best and i < len(personal_best) else entry
         global_best_entry = global_best[i] if global_best and i < len(global_best) else entry
 
-        # Calculate new values based on velocity equation
-        new_day = int(entry["day"] + chi * (
-            c1 * r1 * (best_entry["day"] - entry["day"]) +
-            c2 * r2 * (global_best_entry["day"] - entry["day"])
-        ))
-        new_period = int(entry["period"] + chi * (
-            c1 * r1 * (best_entry["period"] - entry["period"]) +
-            c2 * r2 * (global_best_entry["period"] - entry["period"])
-        ))
-        new_room = random.choice(data["rooms"])["id"]
+        # Compute velocity components
+        velocity_day = chi * (c1 * r1 * (best_entry["day"] - entry["day"]) + c2 * r2 * (global_best_entry["day"] - entry["day"]))
+        velocity_period = chi * (c1 * r1 * (best_entry["period"] - entry["period"]) + c2 * r2 * (global_best_entry["period"] - entry["period"]))
 
-        # Keep new values within bounds
-        new_day = max(0, min(new_day, data["num_days"] - 1))
-        new_period = max(0, min(new_period, data["periods_per_day"] - 1))
+        # Calculate new positions
+        new_day = max(0, min(data["num_days"] - 1, entry["day"] + int(velocity_day)))
+        new_period = max(0, min(data["periods_per_day"] - 1, entry["period"] + int(velocity_period)))
+        new_room = global_best_entry["room_id"]
 
-        # Feasibility Check
-        if is_feasible(part, new_day, new_period, new_room, entry["course_id"], constraints):
-            # Update position if feasible
-            entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
-            print("Position updated")
-        else:
-            # Use the swap-based heuristic to resolve the conflict
-            if not swap_events(part, constraints):
-                print("Conflict detected, but no feasible swaps found. The schedule may remain infeasible.")
+        # Save original state
+        original_day, original_period, original_room = entry["day"], entry["period"], entry["room_id"]
+
+        # Apply the new positions
+        entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
+
+        # Check feasibility
+        if not is_feasible(part, constraints, data["courses"], data["curricula"]):
+            # Revert if infeasible
+            entry["day"], entry["period"], entry["room_id"] = original_day, original_period, original_room
+
+    # Apply neighborhood operations for further refinement
+    part = nl_move(data, part, constraints, data["courses"], data["curricula"])
+    part = nl_swap(part, constraints, data["courses"], data["curricula"])
 
 
-def is_feasible(part, day, period, room, course_id, constraints):
-    for entry in part:
-        if entry["room_id"] == room and entry["day"] == day and entry["period"] == period:
-            return False  # Room conflict
+def is_feasible(schedule, constraints, courses, curricula):
+    """
+    Check if the entire schedule adheres to all HARD constraints.
 
-        if entry["course_id"] == course_id and entry["day"] == day and entry["period"] == period:
-            return False  # Duplicate timeslot for the same course
+    Args:
+        schedule (list): The schedule (particle) to check.
+        constraints (list): Hard constraints.
+        courses (list): Course details, including number of students and teachers.
+        curricula (list): Curricula details, including associated courses.
 
+    Returns:
+        bool: True if the schedule satisfies all HARD constraints, False otherwise.
+    """
+    # Room capacity and overlapping lectures
+    timetable = {}
+    for entry in schedule:
+        day = entry["day"]
+        period = entry["period"]
+        room = entry["room_id"]
+        course_id = entry["course_id"]
+
+        # Create timetable structure
+        if day not in timetable:
+            timetable[day] = {}
+        if period not in timetable[day]:
+            timetable[day][period] = {}
+        if room not in timetable[day][period]:
+            timetable[day][period][room] = []
+
+        timetable[day][period][room].append(course_id)
+
+        # Check room capacity
+        room_details = next((r for r in rooms if r["id"] == room), None)
+        course_details = next((c for c in courses if c["id"] == course_id), None)
+        if room_details and course_details:
+            if course_details["num_students"] > room_details["capacity"]:
+                print(f"Room capacity conflict: Course {course_id} exceeds capacity of Room {room}")
+                return False
+
+        # Check for overlapping lectures in the same room
+        if len(timetable[day][period][room]) > 1:
+            print(f"Room conflict: Multiple courses assigned to Room {room} on Day {day}, Period {period}")
+            return False
+
+    # Teacher availability
+    for course in courses:
+        teacher = course["teacher"]
+        assignments = [
+            entry for entry in schedule if entry["course_id"] == course["id"]
+        ]
+        for i, entry1 in enumerate(assignments):
+            for entry2 in assignments[i + 1:]:
+                if entry1["day"] == entry2["day"] and entry1["period"] == entry2["period"]:
+                    print(f"Teacher conflict: Teacher {teacher} assigned to multiple courses on Day {entry1['day']}, Period {entry1['period']}")
+                    return False
+
+    # Curriculum overlaps
+    for curriculum in curricula:
+        curriculum_courses = curriculum["courses"]
+        curriculum_assignments = [
+            entry
+            for course_id in curriculum_courses
+            for entry in schedule
+            if entry["course_id"] == course_id
+        ]
+        for i, entry1 in enumerate(curriculum_assignments):
+            for entry2 in curriculum_assignments[i + 1:]:
+                if entry1["day"] == entry2["day"] and entry1["period"] == entry2["period"]:
+                    print(f"Curriculum conflict: Courses {entry1['course_id']} and {entry2['course_id']} overlap on Day {entry1['day']}, Period {entry1['period']}")
+                    return False
+
+    # Unavailability constraints
     for constraint in constraints:
-        if constraint["course"] == course_id and (day, period):
-            return False  # Violates unavailability constraint
+        for entry in schedule:
+            if (constraint["course"] == entry["course_id"] and
+                constraint["day"] == entry["day"] and
+                constraint["period"] == entry["period"]):
+                print(f"Unavailability conflict: Course {entry['course_id']} assigned to unavailable slot (Day {entry['day']}, Period {entry['period']})")
+                return False
 
     return True
 
-def swap_events(part, constraints):
-    """
-    Attempts to resolve conflicts in the schedule by swapping two events.
-    """
-    for i, entry1 in enumerate(part):
-        for j, entry2 in enumerate(part):
-            if i != j:  # Ensure we're not swapping an event with itself
-                # Temporarily swap the entries
-                temp_day, temp_period, temp_room = entry1["day"], entry1["period"], entry1["room_id"]
-                entry1["day"], entry1["period"], entry1["room_id"] = entry2["day"], entry2["period"], entry2["room_id"]
-                entry2["day"], entry2["period"], entry2["room_id"] = temp_day, temp_period, temp_room
 
-                # Check feasibility after the swap
-                if is_feasible(part, entry1["day"], entry1["period"], entry1["room_id"], entry1["course_id"], constraints) and \
-                   is_feasible(part, entry2["day"], entry2["period"], entry2["room_id"], entry2["course_id"], constraints):
-                    return True  # Successful swap, keep changes
-                else:
-                    # Revert the swap if it creates conflicts
-                    entry1["day"], entry1["period"], entry1["room_id"] = temp_day, temp_period, temp_room
-                    entry2["day"], entry2["period"], entry2["room_id"] = entry2["day"], entry2["period"], entry2["room_id"]
+def has_conflict(entry, proposed_assignment, constraints,  courses, curricula):
 
-    return False  # No successful swap found
+    """
+    Determine if an assigned lecture (entry) conflicts with the proposed assignment of the problematic course.
+
+    Args:
+        entry (dict): A scheduled course (already assigned).
+        proposed_assignment (dict): Proposed assignment of the problematic course {room_id, day, period, course_id}.
+    """
+    # Extract details of the proposed assignment
+    proposed_room = proposed_assignment["room_id"]
+    proposed_day = proposed_assignment["day"]
+    proposed_period = proposed_assignment["period"]
+    proposed_course = proposed_assignment["course_id"]
+
+    # Extract details of the current scheduled course
+    scheduled_room = entry["room_id"]
+    scheduled_day = entry["day"]
+    scheduled_period = entry["period"]
+    scheduled_course = entry["course_id"]
+
+    # Room occupancy: Same room, day, and period
+    if proposed_room == scheduled_room and proposed_day == scheduled_day and proposed_period == scheduled_period:
+        return True
+
+    # Curriculum conflict: Check if the courses share curricula and overlap in time
+    scheduled_curricula = [
+        curriculum["id"] for curriculum in curricula if scheduled_course in curriculum["courses"]
+    ]
+    proposed_curricula = [
+        curriculum["id"] for curriculum in curricula if proposed_course in curriculum["courses"]
+    ]
+    # If any curricula overlap and timeslots match, it's a conflict
+    if any(curriculum_id in scheduled_curricula for curriculum_id in proposed_curricula) and \
+       scheduled_day == proposed_day and scheduled_period == proposed_period:
+        return True
+
+    # Teacher availability: Check if the same teacher is teaching both courses at the same time
+    scheduled_teacher = get_teacher(courses, scheduled_course)
+    proposed_teacher = get_teacher(courses, proposed_course)
+    if scheduled_teacher == proposed_teacher and scheduled_day == proposed_day and scheduled_period == proposed_period:
+        return True
+
+    # Unavailability constraints: Check if the proposed course violates its unavailability
+    for constraint in constraints:
+        if constraint["course"] == proposed_course and constraint["day"] == proposed_day and constraint["period"] == proposed_period:
+            return True
+    #Course Conflict: Check if the course is assigned more than once on the same room and timeslot
+    if proposed_course == scheduled_course and proposed_day == scheduled_day and proposed_period == scheduled_period:
+        return True
+
+    return False
+
+def get_teacher(courses, course_id):
+    """
+    Retrieve the teacher for a given course ID.
+    """
+    for course in courses:
+        if course["id"] == course_id:
+            return course["teacher"]
+    return None
 
 def convertQuantum(swarm, rcloud, centre, min_distance=2):
     """Reinitializes particles around the swarm's best using Gaussian distribution.
@@ -234,12 +466,14 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
     days = data["num_days"]
     periods = data["periods_per_day"]
 
-    toolbox.register("particle", generate, creator.Particle, courses=courses, rooms=rooms, days=days, periods=periods)
+    toolbox.register("particle", generate, creator.Particle)
     toolbox.register("swarm", tools.initRepeat, creator.Swarm, toolbox.particle)
-    toolbox.register("evaluate", evaluate_schedule)
-
+    toolbox.register(
+        "evaluate",
+        partial(evaluate_schedule, rooms=rooms, courses=courses, curricula=curricula, constraints=constraints)
+    )
     NSWARMS = 1
-    NPARTICLES = 7
+    NPARTICLES = 5
     NEXCESS = 3
     RCLOUD = 0.5
     BOUNDS = [0, len(rooms) * days * periods]
@@ -248,7 +482,7 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
     population = [toolbox.swarm(n=NPARTICLES) for _ in range(NSWARMS)]
 
     chi = 0.729  # Constriction coefficient
-    c1, c2 = 1.5, 1.5  # Cognitive and social coefficients
+    c1, c2 = 1, 1  # Cognitive and social coefficients
 
     rexcl = (BOUNDS[1] - BOUNDS[0]) / (2 * NSWARMS**(1.0 / 2))
 
@@ -316,7 +550,7 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
             best_global_fitness = best_fitness_in_population
 
         # Stop if the fitness meets the target of 5 or less
-        if best_global_fitness <= 5:
+        if best_global_fitness <= 0:
             print(f"\nStopping early as target fitness of 5 or less was reached: {best_global_fitness}")
             break
 

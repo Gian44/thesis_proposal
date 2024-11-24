@@ -3,6 +3,7 @@ import math
 import random
 from deap import base, creator, tools
 import operator
+from initialize_population import assign_courses
 
 # Initialize globals for course and room data, which will be set in main()
 courses = []
@@ -14,89 +15,113 @@ creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
 creator.create("Particle", list, fitness=creator.FitnessMin, speed=list, best=None, bestfit=None)
 creator.create("Swarm", list, best=None, bestfit=None)
 
-# Generate a particle (schedule) based on random initialization
-def generate(pclass, courses, rooms, days, periods):
+# Generate a particle (schedule) using Graph Based
+def generate(pclass):
+    schedule = assign_courses()  # Generate the initial timetable
     particle = []
-    for course in courses:
-        num_lectures = course.get("num_lectures", 1)
-        for _ in range(num_lectures):
-            # Assign a random room, day, and period for each lecture
-            room = random.choice(rooms)["id"]
-            day = random.randint(0, days - 1)
-            period = random.randint(0, periods - 1)
 
-            entry = {
-                "course_id": course["id"],
-                "room_id": room,
-                "day": day,
-                "period": period
-            }
-            particle.append(entry)
-
-    #print("Generated particle:", particle)  # Debug: Check if particle is correctly generated
+    for day, periods in schedule.items():
+        for period, rooms in periods.items():
+            for room, course_id in rooms.items():
+                if course_id != -1:  # Skip empty slots
+                    particle.append({
+                        "day": day,
+                        "period": period,
+                        "room_id": room,
+                        "course_id": course_id
+                    })
     return pclass(particle)
 
 
 
-def evaluate_schedule(schedule):
-    # Define penalties for hard constraints
-    room_conflict_penalty = 0
-    capacity_violation_penalty = 0
-    curriculum_conflict_penalty = 0
-    teacher_conflict_penalty = 0
+def evaluate_schedule(particle):
+    """
+    Evaluates a particle's schedule for soft constraint penalties.
+    Args:
+        particle: A list of schedule entries representing a particle.
+    Returns:
+        A tuple containing the total penalty score.
+    """
+    # Initialize penalties
+    room_capacity_utilization_penalty = 0
+    min_days_violation_penalty = 0
+    curriculum_compactness_penalty = 0
+    room_stability_penalty = 0
 
-    room_schedule = {}
-    curriculum_schedule = {}
-    teacher_schedule = {}
+    # Validate rooms
+    if not isinstance(rooms, list) or not all(isinstance(r, dict) for r in rooms):
+        raise ValueError("Rooms variable must be a list of dictionaries with 'id' and 'capacity' keys.")
 
-    # Calculate hard constraint penalties
-    for entry in schedule:
-        course_id = entry['course_id']
-        room_id = entry['room_id']
-        day = entry['day']
-        period = entry['period']
-        course = next((c for c in courses if c["id"] == course_id), None)
-        room = next((r for r in rooms if r["id"] == room_id), None)
-        curriculum = next((curr for curr in curricula if course_id in curr["courses"]), None)
-        teacher = course["teacher"]
+    # Convert particle into a timetable-like structure
+    timetable = {}
+    for entry in particle:
+        day = entry["day"]
+        period = entry["period"]
+        room = entry["room_id"]
+        course_id = entry["course_id"]
 
-        # Hard constraint: Room conflict check
-        if (room_id, day, period) in room_schedule:
-            room_conflict_penalty += 5000
-        else:
-            room_schedule[(room_id, day, period)] = course_id
+        if day not in timetable:
+            timetable[day] = {}
+        if period not in timetable[day]:
+            timetable[day][period] = {}
+        timetable[day][period][room] = course_id
 
-        # Hard constraint: Room capacity check
-        if course['num_students'] > room['capacity']:
-            capacity_violation_penalty += 5000
+    # Track course assignments and days used
+    course_assignments = {course["id"]: [] for course in courses}
 
-        # Hard constraint: Curriculum conflict check
-        if curriculum:
-            if curriculum["id"] not in curriculum_schedule:
-                curriculum_schedule[curriculum["id"]] = []
-            for (scheduled_day, scheduled_period) in curriculum_schedule[curriculum["id"]]:
-                if scheduled_day == day and scheduled_period == period:
-                    curriculum_conflict_penalty += 5000
-            curriculum_schedule[curriculum["id"]].append((day, period))
+    for day, periods in timetable.items():
+        for period, rooms_in_period in periods.items():
+            for room, course_id in rooms_in_period.items():
+                if course_id == -1:  # Skip empty slots
+                    continue
+                course_assignments[course_id].append({"day": day, "period": period, "room_id": room})
 
-        # Hard constraint: Teacher conflict check
-        if teacher not in teacher_schedule:
-            teacher_schedule[teacher] = []
-        for (scheduled_day, scheduled_period) in teacher_schedule[teacher]:
-            if scheduled_day == day and scheduled_period == period:
-                teacher_conflict_penalty += 5000
-        teacher_schedule[teacher].append((day, period))
+    # Evaluate penalties for each course
+    for course in courses:
+        course_id = course["id"]
+        assignments = course_assignments[course_id]
 
-    # Calculate total hard constraint penalty
-    hard_constraint_penalty = (
-        room_conflict_penalty +
-        capacity_violation_penalty +
-        curriculum_conflict_penalty +
-        teacher_conflict_penalty
+        # Room Capacity Penalty
+        for assignment in assignments:
+            room = assignment["room_id"]
+            room_details = next((r for r in rooms if r["id"] == room), None)
+            if room_details and course["num_students"] > room_details["capacity"]:
+                room_capacity_utilization_penalty += (course["num_students"] - room_details["capacity"])
+
+        # Minimum Working Days Penalty
+        days_used = {assignment["day"] for assignment in assignments}
+        if len(days_used) < course["min_days"]:
+            min_days_violation_penalty += 5 * (course["min_days"] - len(days_used))
+
+        # Room Stability Penalty
+        rooms_used = {assignment["room_id"] for assignment in assignments}
+        if len(rooms_used) > 1:  # More than one room used
+            room_stability_penalty += (len(rooms_used) - 1)
+
+    # Curriculum Compactness Penalty
+    for curriculum in curricula:
+        curriculum_courses = curriculum["courses"]
+        curriculum_assignments = [
+            assignment
+            for course_id in curriculum_courses
+            for assignment in course_assignments[course_id]
+        ]
+        curriculum_assignments.sort(key=lambda x: (x["day"], x["period"]))  # Sort by day and period
+        for i in range(1, len(curriculum_assignments)):
+            current = curriculum_assignments[i]
+            previous = curriculum_assignments[i - 1]
+            if current["day"] == previous["day"] and current["period"] != previous["period"] + 1:
+                curriculum_compactness_penalty += 2  # Non-adjacent lectures in the same day
+
+    # Calculate total penalty
+    total_penalty = (
+        room_capacity_utilization_penalty +
+        min_days_violation_penalty +
+        curriculum_compactness_penalty +
+        room_stability_penalty
     )
 
-    # Return the fitness score as the total hard constraint penalty
-    return (hard_constraint_penalty,)
+    return (total_penalty,)
 
 toolbox = base.Toolbox()
 
@@ -209,7 +234,7 @@ def alternative_search_space(swarm, data, days, periods):
         part.fitness.values = toolbox.evaluate(part)
         part.best = None  # Reset personal best to focus on new space
 
-def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
+def main(data, max_iterations=5, verbose=True, no_improvement_limit=10):
     global courses, rooms, curricula
     courses = data["courses"]
     rooms = data["rooms"]
@@ -218,7 +243,7 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
     days = data["num_days"]
     periods = data["periods_per_day"]
 
-    toolbox.register("particle", generate, creator.Particle, courses=courses, rooms=rooms, days=days, periods=periods)
+    toolbox.register("particle", generate, creator.Particle)
     toolbox.register("swarm", tools.initRepeat, creator.Swarm, toolbox.particle)
     toolbox.register("evaluate", evaluate_schedule)
 
@@ -232,7 +257,7 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
     population = [toolbox.swarm(n=NPARTICLES) for _ in range(NSWARMS)]
 
     chi = 0.729  # Constriction coefficient
-    c1, c2 = 1.5, 1.5  # Cognitive and social coefficients
+    c1, c2 = 1, 1  # Cognitive and social coefficients
 
     rexcl = (BOUNDS[1] - BOUNDS[0]) / (2 * NSWARMS**(1.0 / 2))
 
