@@ -4,7 +4,7 @@ import os
 import shutil
 
 # Read data from .ctt file
-filename = 'mnt/data/comp01.ctt'  # Replace with your .ctt file name
+filename = 'mnt/data/comp02.ctt'  # Replace with your .ctt file name
 courses, rooms, unavailability_constraints, curricula, days, periods_per_day= read_ctt_file(filename)
 # Initialize timetable: days x periods_per_day x rooms
 # -1 indicates empty slots

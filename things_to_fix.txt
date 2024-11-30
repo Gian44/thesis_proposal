@@ -1,0 +1,3 @@
+soft constraint proper calculation
+hard constraint proper evaluation (for feasibility)
+make algorithm solve faster

@@ -16,7 +16,7 @@ creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
 creator.create("Particle", list, fitness=creator.FitnessMin, speed=list, best=None, bestfit=None)
 creator.create("Swarm", list, best=None, bestfit=None)
 
-# Generate a particle (schedule) using Graph Based
+# Generate a particle (schedule) using Graph Based Heuristic
 def generate(pclass):
     schedule = assign_courses()  # Generate the initial timetable
     particle = []
@@ -37,7 +37,7 @@ def generate(pclass):
 def evaluate_schedule(particle, rooms, courses, curricula, constraints):
     """
     Evaluates the fitness of a particle by calculating the penalties
-    for both soft and hard constraints.
+    for soft constraints.
 
     Args:
         particle (list): The schedule (particle) to evaluate.
@@ -49,62 +49,7 @@ def evaluate_schedule(particle, rooms, courses, curricula, constraints):
     Returns:
         tuple: A single fitness value combining penalties for hard and soft constraints.
     """
-    # Initialize penalties
-    hard_constraint_penalty = 0
-
-    # Initialize schedules for validation
-    room_schedule = {}
-    curriculum_schedule = {}
-    teacher_schedule = {}
-
-    # HARD CONSTRAINTS
-    for entry in particle:
-        course_id = entry['course_id']
-        room_id = entry['room_id']
-        day = entry['day']
-        period = entry['period']
-        course = next((c for c in courses if c["id"] == course_id), None)
-        room = next((r for r in rooms if r["id"] == room_id), None)
-        curriculum = next((curr for curr in curricula if course_id in curr["courses"]), None)
-        teacher = course["teacher"] if course else None
-
-        if course is None or room is None:
-            raise ValueError(f"Invalid course_id {course_id} or room_id {room_id}")
-
-        # Room conflict
-        if (room_id, day, period) in room_schedule:
-            hard_constraint_penalty += 5000
-        else:
-            room_schedule[(room_id, day, period)] = course_id
-
-        # Room capacity
-        if course["num_students"] > room["capacity"]:
-            hard_constraint_penalty += 5000
-
-        # Curriculum conflict
-        if curriculum:
-            if curriculum["id"] not in curriculum_schedule:
-                curriculum_schedule[curriculum["id"]] = []
-            for (scheduled_day, scheduled_period) in curriculum_schedule[curriculum["id"]]:
-                if scheduled_day == day and scheduled_period == period:
-                    hard_constraint_penalty += 5000
-            curriculum_schedule[curriculum["id"]].append((day, period))
-
-        # Teacher conflict
-        if teacher not in teacher_schedule:
-            teacher_schedule[teacher] = []
-        for (scheduled_day, scheduled_period) in teacher_schedule[teacher]:
-            if scheduled_day == day and scheduled_period == period:
-                hard_constraint_penalty += 5000
-        teacher_schedule[teacher].append((day, period))
-
-    # Unavailability constraints
-    for constraint in constraints:
-        for entry in particle:
-            if (constraint["course"] == entry["course_id"] and
-                constraint["day"] == entry["day"] and
-                constraint["period"] == entry["period"]):
-                hard_constraint_penalty += 5000
+    
     # Initialize penalties
     room_capacity_utilization_penalty = 0
     min_days_violation_penalty = 0
@@ -181,8 +126,7 @@ def evaluate_schedule(particle, rooms, courses, curricula, constraints):
         room_capacity_utilization_penalty +
         min_days_violation_penalty +
         curriculum_compactness_penalty +
-        room_stability_penalty +
-        hard_constraint_penalty
+        room_stability_penalty 
     )
 
     return (total_penalty,)
@@ -247,11 +191,12 @@ def updateParticle(data, part, personal_best, global_best, chi, c1, c2, constrai
     """
     for i, entry in enumerate(part):
         r1, r2 = random.random(), random.random()
-
+        #print("Entry: " + str(entry))
         # Get the best positions from personal and global bests
         best_entry = personal_best[i] if personal_best and i < len(personal_best) else entry
+        #print ("Best Entry: " + str(best_entry))
         global_best_entry = global_best[i] if global_best and i < len(global_best) else entry
-
+        #print ("Global Best Entry: " + str(global_best_entry))
         # Compute velocity components
         velocity_day = chi * (c1 * r1 * (best_entry["day"] - entry["day"]) + c2 * r2 * (global_best_entry["day"] - entry["day"]))
         velocity_period = chi * (c1 * r1 * (best_entry["period"] - entry["period"]) + c2 * r2 * (global_best_entry["period"] - entry["period"]))
@@ -259,23 +204,39 @@ def updateParticle(data, part, personal_best, global_best, chi, c1, c2, constrai
         # Calculate new positions
         new_day = max(0, min(data["num_days"] - 1, entry["day"] + int(velocity_day)))
         new_period = max(0, min(data["periods_per_day"] - 1, entry["period"] + int(velocity_period)))
-        new_room = global_best_entry["room_id"]
+        new_room = random.choice(data["rooms"])["id"]
+
+        #print("New day: " + str(new_day))
+        #print("New period: " + str(new_period))
+        #print("New room: " + str(new_room))
 
         # Save original state
         original_day, original_period, original_room = entry["day"], entry["period"], entry["room_id"]
 
-        # Apply the new positions
+        # Find the course currently assigned to the new position (if any)
+        conflicting_entry = next(
+            (e for e in part if e["day"] == new_day and e["period"] == new_period and e["room_id"] == new_room),
+            None
+        )
+        #print("Conflicting entry: " + str(conflicting_entry))
+
+        # Temporarily swap positions
         entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
+        if conflicting_entry:
+            conflicting_entry["day"], conflicting_entry["period"], conflicting_entry["room_id"] = original_day, original_period, original_room
 
         # Check feasibility
-        if not is_feasible(part, constraints, data["courses"], data["curricula"]):
-            # Revert if infeasible
+        if is_feasible(part, constraints, data["courses"], data["curricula"]):
+            continue
+        else:
+            # Revert both entries to their original positions
             entry["day"], entry["period"], entry["room_id"] = original_day, original_period, original_room
+            if conflicting_entry:
+                conflicting_entry["day"], conflicting_entry["period"], conflicting_entry["room_id"] = new_day, new_period, new_room
 
     # Apply neighborhood operations for further refinement
     part = nl_move(data, part, constraints, data["courses"], data["curricula"])
     part = nl_swap(part, constraints, data["courses"], data["curricula"])
-
 
 def is_feasible(schedule, constraints, courses, curricula):
     """
@@ -298,7 +259,6 @@ def is_feasible(schedule, constraints, courses, curricula):
         room = entry["room_id"]
         course_id = entry["course_id"]
 
-        # Create timetable structure
         if day not in timetable:
             timetable[day] = {}
         if period not in timetable[day]:
@@ -308,32 +268,34 @@ def is_feasible(schedule, constraints, courses, curricula):
 
         timetable[day][period][room].append(course_id)
 
-        # Check room capacity
-        room_details = next((r for r in rooms if r["id"] == room), None)
-        course_details = next((c for c in courses if c["id"] == course_id), None)
-        if room_details and course_details:
-            if course_details["num_students"] > room_details["capacity"]:
-                print(f"Room capacity conflict: Course {course_id} exceeds capacity of Room {room}")
-                return False
-
-        # Check for overlapping lectures in the same room
+        # Room Occupancy Constraint
         if len(timetable[day][period][room]) > 1:
-            print(f"Room conflict: Multiple courses assigned to Room {room} on Day {day}, Period {period}")
+            #print(f"Room conflict: Multiple courses assigned to Room {room} on Day {day}, Period {period}")
             return False
 
-    # Teacher availability
+    # Ensure All Lectures are Scheduled and Assigned to Distinct Periods
     for course in courses:
-        teacher = course["teacher"]
+        assignments = [entry for entry in schedule if entry["course_id"] == course["id"]]
+        if len(assignments) != course["num_lectures"]:
+            #print(f"Lecture count conflict: Course {course['id']} does not have all lectures scheduled.")
+            return False
+        assigned_periods = {(entry["day"], entry["period"]) for entry in assignments}
+        if len(assigned_periods) != len(assignments):
+            #print(f"Distinct period conflict: Lectures of Course {course['id']} overlap in periods.")
+            return False
+
+    # Teacher Conflict Constraint
+    for course in courses:
         assignments = [
             entry for entry in schedule if entry["course_id"] == course["id"]
         ]
         for i, entry1 in enumerate(assignments):
             for entry2 in assignments[i + 1:]:
                 if entry1["day"] == entry2["day"] and entry1["period"] == entry2["period"]:
-                    print(f"Teacher conflict: Teacher {teacher} assigned to multiple courses on Day {entry1['day']}, Period {entry1['period']}")
+                    #print(f"Teacher conflict: Teacher {teacher} assigned to multiple courses on Day {entry1['day']}, Period {entry1['period']}")
                     return False
 
-    # Curriculum overlaps
+    # Curriculum Conflict Constraint
     for curriculum in curricula:
         curriculum_courses = curriculum["courses"]
         curriculum_assignments = [
@@ -345,73 +307,19 @@ def is_feasible(schedule, constraints, courses, curricula):
         for i, entry1 in enumerate(curriculum_assignments):
             for entry2 in curriculum_assignments[i + 1:]:
                 if entry1["day"] == entry2["day"] and entry1["period"] == entry2["period"]:
-                    print(f"Curriculum conflict: Courses {entry1['course_id']} and {entry2['course_id']} overlap on Day {entry1['day']}, Period {entry1['period']}")
+                    #print(f"Curriculum conflict: Courses {entry1['course_id']} and {entry2['course_id']} overlap on Day {entry1['day']}, Period {entry1['period']}")
                     return False
 
-    # Unavailability constraints
+    # Unavailability Constraints
     for constraint in constraints:
         for entry in schedule:
             if (constraint["course"] == entry["course_id"] and
                 constraint["day"] == entry["day"] and
                 constraint["period"] == entry["period"]):
-                print(f"Unavailability conflict: Course {entry['course_id']} assigned to unavailable slot (Day {entry['day']}, Period {entry['period']})")
+                #print(f"Unavailability conflict: Course {entry['course_id']} assigned to unavailable slot (Day {entry['day']}, Period {entry['period']})")
                 return False
 
     return True
-
-
-def has_conflict(entry, proposed_assignment, constraints,  courses, curricula):
-
-    """
-    Determine if an assigned lecture (entry) conflicts with the proposed assignment of the problematic course.
-
-    Args:
-        entry (dict): A scheduled course (already assigned).
-        proposed_assignment (dict): Proposed assignment of the problematic course {room_id, day, period, course_id}.
-    """
-    # Extract details of the proposed assignment
-    proposed_room = proposed_assignment["room_id"]
-    proposed_day = proposed_assignment["day"]
-    proposed_period = proposed_assignment["period"]
-    proposed_course = proposed_assignment["course_id"]
-
-    # Extract details of the current scheduled course
-    scheduled_room = entry["room_id"]
-    scheduled_day = entry["day"]
-    scheduled_period = entry["period"]
-    scheduled_course = entry["course_id"]
-
-    # Room occupancy: Same room, day, and period
-    if proposed_room == scheduled_room and proposed_day == scheduled_day and proposed_period == scheduled_period:
-        return True
-
-    # Curriculum conflict: Check if the courses share curricula and overlap in time
-    scheduled_curricula = [
-        curriculum["id"] for curriculum in curricula if scheduled_course in curriculum["courses"]
-    ]
-    proposed_curricula = [
-        curriculum["id"] for curriculum in curricula if proposed_course in curriculum["courses"]
-    ]
-    # If any curricula overlap and timeslots match, it's a conflict
-    if any(curriculum_id in scheduled_curricula for curriculum_id in proposed_curricula) and \
-       scheduled_day == proposed_day and scheduled_period == proposed_period:
-        return True
-
-    # Teacher availability: Check if the same teacher is teaching both courses at the same time
-    scheduled_teacher = get_teacher(courses, scheduled_course)
-    proposed_teacher = get_teacher(courses, proposed_course)
-    if scheduled_teacher == proposed_teacher and scheduled_day == proposed_day and scheduled_period == proposed_period:
-        return True
-
-    # Unavailability constraints: Check if the proposed course violates its unavailability
-    for constraint in constraints:
-        if constraint["course"] == proposed_course and constraint["day"] == proposed_day and constraint["period"] == proposed_period:
-            return True
-    #Course Conflict: Check if the course is assigned more than once on the same room and timeslot
-    if proposed_course == scheduled_course and proposed_day == scheduled_day and proposed_period == scheduled_period:
-        return True
-
-    return False
 
 def get_teacher(courses, course_id):
     """
@@ -422,42 +330,98 @@ def get_teacher(courses, course_id):
             return course["teacher"]
     return None
 
-def convertQuantum(swarm, rcloud, centre, min_distance=2):
-    """Reinitializes particles around the swarm's best using Gaussian distribution.
-       Ensures minimum distance from previous positions for diversity."""
+def convertQuantum(swarm, rcloud, centre, min_distance, constraints, courses, curricula):
+    """
+    Reinitializes particles around the swarm's best using Gaussian distribution.
+    Ensures minimum distance from previous positions for diversity.
+    Keeps solutions feasible (no hard constraint violations).
+    """
     for part in swarm:
         for entry, best_entry in zip(part, centre):
-            new_day = max(0, int(best_entry["day"] + rcloud * random.gauss(0, 1)))
-            new_period = max(0, int(best_entry["period"] + rcloud * random.gauss(0, 1)))
-            
-            # Ensure diversity by checking if new position is distinct enough from previous position
-            if abs(new_day - entry["day"]) < min_distance and abs(new_period - entry["period"]) < min_distance:
-                # Reapply Gaussian offset if too close to previous position
-                new_day += int(min_distance * random.choice([-1, 1]))
-                new_period += int(min_distance * random.choice([-1, 1]))
+            # Initialize original state
+            original_day, original_period, original_room = entry["day"], entry["period"], entry["room_id"]
 
-            # Assign new position
-            entry["day"] = max(0, min(new_day, centre[0]["day"]))
-            entry["period"] = max(0, min(new_period, centre[0]["period"]))
-        
+            attempts = 0
+            max_attempts = 10  # Limit to avoid infinite loops
+
+            while attempts < max_attempts:
+                attempts += 1
+
+                # Generate new positions around the best entry
+                new_day = max(0, int(best_entry["day"] + rcloud * random.gauss(0, 1)))
+                new_period = max(0, int(best_entry["period"] + rcloud * random.gauss(0, 1)))
+                new_room = best_entry["room_id"]
+
+                # Ensure diversity by checking minimum distance
+                if abs(new_day - entry["day"]) < min_distance or abs(new_period - entry["period"]) < min_distance:
+                    continue
+
+                # Temporarily assign new values
+                entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
+
+                # Check feasibility of the updated particle
+                if is_feasible(part, constraints, courses, curricula):
+                    break  # Feasible solution found, exit the loop
+                else:
+                    # Revert to original values if not feasible
+                    entry["day"], entry["period"], entry["room_id"] = original_day, original_period, original_room
+
+            # If max attempts reached, retain the original values
+            if attempts >= max_attempts:
+                entry["day"], entry["period"], entry["room_id"] = original_day, original_period, original_room
+
         # Update fitness after reinitialization
         part.fitness.values = toolbox.evaluate(part)
-        part.best = None  # Reset particle's personal best to ensure it explores
+        part.best = None  # Reset particle's personal best to ensure exploration
 
-def alternative_search_space(swarm, data, days, periods):
-    """Randomly reinitializes particles to a new search space if current space is unfeasible."""
+def alternative_search_space(swarm, data, days, periods, all_swarms, swarm_index):
+    """
+    Reinitializes particles in the swarm to a new search space using the initial solution generation logic.
+    Ensures that the new positions do not collide with particles in other swarms.
+    
+    Args:
+        swarm (list): The swarm to reinitialize.
+        data (dict): Contains the problem data including rooms, courses, etc.
+        days (int): Number of days in the schedule.
+        periods (int): Number of periods per day.
+        all_swarms (list): List of all swarms in the population to check for collisions.
+        swarm_index (int): Index of the current swarm in the population.
+    """
+    # Helper function to check collisions
+    def is_collision(entry, other_swarms):
+        for other_swarm_index, other_swarm in enumerate(other_swarms):
+            if other_swarm_index == swarm_index:  # Skip checking the current swarm
+                continue
+            for other_particle in other_swarm:
+                for other_entry in other_particle:
+                    if (
+                        entry["day"] == other_entry["day"]
+                        and entry["period"] == other_entry["period"]
+                        and entry["room_id"] == other_entry["room_id"]
+                    ):
+                        return True
+        return False
+
     for part in swarm:
         for entry in part:
-            # Assign random positions to encourage exploration of a new search space
-            entry["day"] = random.randint(0, days - 1)
-            entry["period"] = random.randint(0, periods - 1)
-            entry["room_id"] = random.choice(data["rooms"])["id"]
+            while True:
+                # Reinitialize using a similar logic to initial particle generation
+                new_day = random.randint(0, days - 1)
+                new_period = random.randint(0, periods - 1)
+                new_room = random.choice(data["rooms"])["id"]
 
-        # Re-evaluate fitness after alternative search space initialization
+                # Assign the new values temporarily
+                entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
+
+                # Check for collisions with other swarms
+                if not is_collision(entry, all_swarms):
+                    break  # Exit the loop if no collision is detected
+
+        # Re-evaluate fitness after reinitialization
         part.fitness.values = toolbox.evaluate(part)
         part.best = None  # Reset personal best to focus on new space
 
-def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
+def main(data, max_iterations=50, verbose=True, no_improvement_limit=10):
     global courses, rooms, curricula
     courses = data["courses"]
     rooms = data["rooms"]
@@ -535,15 +499,6 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
                         swarm.no_improvement_iters += 1
                         print("No improvement in swarm bestfit.")
 
-            if verbose and swarm.bestfit is not None:
-                print(f"Swarm {i+1} Best Fitness: {swarm.bestfit.values[0]}")
-
-            if swarm.no_improvement_iters > no_improvement_limit:
-                convertQuantum(swarm, RCLOUD, swarm.best, min_distance)
-                if swarm.no_improvement_iters > no_improvement_limit * 2:
-                    alternative_search_space(swarm, data, days, periods)
-                swarm.no_improvement_iters = 0
-
         # Track the best global fitness
         best_fitness_in_population = min(swarm.bestfit.values[0] for swarm in population if swarm.bestfit.values)
         if best_fitness_in_population < best_global_fitness:
@@ -569,7 +524,15 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
                         reinit_swarms.add(s1 if population[s1].bestfit <= population[s2].bestfit else s2)
 
             for s in reinit_swarms:
-                convertQuantum(population[s], RCLOUD, population[s].best, min_distance)
+                convertQuantum(
+                    swarm, 
+                    RCLOUD, 
+                    swarm.best, 
+                    min_distance, 
+                    constraints, 
+                    data["courses"], 
+                    data["curricula"]
+                )
                 for part in population[s]:
                     part.fitness.values = toolbox.evaluate(part)
 
@@ -615,7 +578,130 @@ def main(data, max_iterations=100, verbose=True, no_improvement_limit=10):
         final_best_schedule = None
         print("\nNo solution found.")
 
+    if final_best_schedule:
+        print("\nFinal Best Schedule Analysis:")
+        soft_constraints = analyze_soft_constraints(
+            final_best_schedule,
+            data["courses"],
+            data["rooms"],
+            data["curricula"]
+        )
+
+        print("\nSoft Constraint Violations:")
+        for constraint, penalty in soft_constraints.items():
+            print(f"{constraint}: {penalty}")
+
+        print("\nTotal Soft Constraint Penalty:", sum(soft_constraints.values()))
+    else:
+        print("No feasible solution found.")
+
+
     return final_best_schedule
+
+
+def analyze_soft_constraints(schedule, courses, rooms, curricula):
+    """
+    Analyze and calculate soft constraint penalties in the given schedule.
+
+    Args:
+        schedule (list): The final best schedule.
+        courses (list): List of all courses with metadata.
+        rooms (list): List of all rooms with metadata.
+        curricula (list): List of curricula and their courses.
+
+    Returns:
+        dict: A dictionary containing penalties for each soft constraint.
+    """
+    # Initialize penalties
+    room_capacity_penalty = 0
+    min_days_violation_penalty = 0
+    curriculum_compactness_penalty = 0
+    room_stability_penalty = 0
+
+    # Convert schedule into a timetable-like structure
+    timetable = {}
+    for entry in schedule:
+        day = entry["day"]
+        period = entry["period"]
+        room = entry["room_id"]
+        course_id = entry["course_id"]
+
+        if day not in timetable:
+            timetable[day] = {}
+        if period not in timetable[day]:
+            timetable[day][period] = {}
+        timetable[day][period][room] = course_id
+
+    # Track course assignments and days used
+    course_assignments = {course["id"]: [] for course in courses}
+    for day, periods in timetable.items():
+        for period, rooms_in_period in periods.items():
+            for room, course_id in rooms_in_period.items():
+                course_assignments[course_id].append({"day": day, "period": period, "room_id": room})
+
+    # Evaluate penalties for each course
+    for course in courses:
+        course_id = course["id"]
+        assignments = course_assignments[course_id]
+
+        # Room Capacity Penalty
+        for assignment in assignments:
+            room = assignment["room_id"]
+            room_details = next((r for r in rooms if r["id"] == room), None)
+            if room_details and course["num_students"] > room_details["capacity"]:
+                room_capacity_penalty += (course["num_students"] - room_details["capacity"])
+
+        # Minimum Working Days Penalty
+        days_used = {assignment["day"] for assignment in assignments}
+        missing_days = max(0, course["min_days"] - len(days_used))
+        min_days_violation_penalty += 5 * missing_days
+
+        # Room Stability Penalty
+        rooms_used = {assignment["room_id"] for assignment in assignments}
+        room_stability_penalty += max(0, len(rooms_used) - 1)  # Each extra room adds 1 penalty point
+
+    # Curriculum Compactness Penalty
+    for curriculum in curricula:
+        curriculum_courses = curriculum["courses"]
+        curriculum_assignments = [
+            assignment
+            for course_id in curriculum_courses
+            for assignment in course_assignments[course_id]
+        ]
+
+        # Group assignments by day
+        assignments_by_day = {}
+        for assignment in curriculum_assignments:
+            day = assignment["day"]
+            if day not in assignments_by_day:
+                assignments_by_day[day] = []
+            assignments_by_day[day].append(assignment)
+
+        for day, day_assignments in assignments_by_day.items():
+            # Sort by period within the same day
+            day_assignments.sort(key=lambda x: x["period"])
+            for i in range(len(day_assignments)):
+                current = day_assignments[i]
+                # Check if the current lecture is isolated
+                is_isolated = True
+                if i > 0:  # Check previous
+                    previous = day_assignments[i - 1]
+                    if current["period"] == previous["period"] + 1:
+                        is_isolated = False
+                if i < len(day_assignments) - 1:  # Check next
+                    next_lecture = day_assignments[i + 1]
+                    if current["period"] + 1 == next_lecture["period"]:
+                        is_isolated = False
+                if is_isolated:
+                    curriculum_compactness_penalty += 2  # Each isolated lecture adds 2 points
+
+    # Return the penalties
+    return {
+        "room_capacity_penalty": room_capacity_penalty,
+        "min_days_violation_penalty": min_days_violation_penalty,
+        "curriculum_compactness_penalty": curriculum_compactness_penalty,
+        "room_stability_penalty": room_stability_penalty,
+    }
 
 if __name__ == "__main__":
     # Example usage:
