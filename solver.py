@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 from multiswarm import main as multiswarm_optimization
-from initialize_population import assign_courses  
+from initialize_population2 import assign_courses  
 
 
 # Step 1: Parse the .ctt file
@@ -96,7 +96,7 @@ def save_output(schedule, csv_path, out_path):
 # Main execution
 if __name__ == "__main__":
     # Parse the .ctt input file
-    ctt_data = parse_ctt("mnt/data/comp02.ctt")
+    ctt_data = parse_ctt("mnt/data/comp01.ctt")
 
     # Generate initial feasible solution
     timetable = generate_initial_solution()
@@ -118,4 +118,4 @@ if __name__ == "__main__":
     #print(optimized_solution)
 
     # Save the optimized solution
-    save_output(optimized_solution, "mnt/data/comp02_optimized.csv", "mnt/data/comp02_optimized.out")
+    save_output(optimized_solution, "mnt/data/comp01.csv", "mnt/data/comp01.out")

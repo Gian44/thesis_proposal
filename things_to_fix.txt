@@ -1,3 +1,1 @@
-soft constraint proper calculation
-hard constraint proper evaluation (for feasibility)
-make algorithm solve faster
+implement Change Detection and Quantum Particles
