@@ -3,7 +3,7 @@ from ctt_parser import read_ctt_file
 import copy
 
 # Read data from .ctt file
-filename = 'mnt/data/comp01.ctt'  # Replace with your .ctt file name
+filename = 'mnt/data/comp02.ctt'  # Replace with your .ctt file name
 courses, rooms, unavailability_constraints, curricula, days, periods_per_day= read_ctt_file(filename)
 # Initialize timetable: days x periods_per_day x rooms
 # -1 indicates empty slots
@@ -64,7 +64,7 @@ def get_available_slots(course, constraint_period=[-1,-1,-1]):
                         if (courses[course]['students']  > rooms[room]):
                             total_room_violations += courses[course]['students']  - rooms[room]
                         available_slots.append(slot)
-    return available_slots, total_room_violations
+    return available_slots
 
 def get_available_slots_with_conflict_course(course):
     available_slots = []
@@ -214,10 +214,10 @@ def assign_courses(verbose_param = True):
         if is_complete(): 
             break 
 
-        #**** Procedure 1 *****#
+        #**** Procedure 4 *****#
         for course in sequenced_courses:
             for _ in range(courses[course]['lectures'] - courses[course]['assigned_lectures']):
-                available_slots, total_room_violations = get_available_slots(course)
+                available_slots = get_available_slots(course)
                 if available_slots:
                     slot = available_slots[random.randint(0,len(available_slots)-1)]
                     timetable[slot[0]][slot[1]][slot[2]] = course
