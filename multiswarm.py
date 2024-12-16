@@ -820,11 +820,6 @@ def main(data, max_iterations=2000, verbose=True):
 
             print("Global best fitness updated.")
 
-        # Stop if the fitness meets the target of 5 or less
-        if best_global_fitness <= 0:
-            print(f"\nStopping early as target fitness of 0 was reached: {best_global_fitness}")
-            break
-
         # Exclusion mechanism
         room_map = {room["id"]: idx for idx, room in enumerate(rooms)}
         if len(population) > 1:
@@ -893,6 +888,11 @@ def main(data, max_iterations=2000, verbose=True):
                 initial_fitness_values.append(part.fitness.values[0])
 
             population.append(new_swarm)
+            
+        # Stop if the fitness meets the target of 5 or less
+        if best_global_fitness <= 0:
+            print(f"\nStopping early as target fitness of 0 was reached: {best_global_fitness}")
+            break
 
 
     # Determine the best particle across all swarms based on bestfit values if available
