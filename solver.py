@@ -1,7 +1,8 @@
 import pandas as pd
 import re
+from config import *
 from multiswarm import main as multiswarm_optimization
-from initialize_population2 import assign_courses  
+from initialize_population2 import assign_courses 
 
 
 # Step 1: Parse the .ctt file
@@ -43,7 +44,7 @@ def parse_ctt(file_path):
 
             # Section Parsing
             elif section == "courses":
-                match = re.match(r"(\w+) (\w+) (\d+) (\d+) (\d+)", line)
+                match = re.match(r"([\w\-]+) ([\w\-]+) (\d+) (\d+) (\d+)", line)
                 if match:
                     course = {"id": match.group(1), "teacher": match.group(2),
                               "num_lectures": int(match.group(3)), "min_days": int(match.group(4)),
@@ -65,7 +66,7 @@ def parse_ctt(file_path):
                     print(f"Warning: Skipping malformed curricula line: {line}")
                 
             elif section == "constraints":
-                match = re.match(r"(\w+) (\d+) (\d+)", line)
+                match = re.match(r"([\w\-]+) (\d+) (\d+)", line)
                 if match:
                     constraint = {"course": match.group(1), "day": int(match.group(2)), "period": int(match.group(3))}
                     data["constraints"].append(constraint)
@@ -96,18 +97,19 @@ def save_output(schedule, csv_path, out_path):
 # Main execution
 if __name__ == "__main__":
     # Parse the .ctt input file
-    ctt_data = parse_ctt("mnt/data/comp02.ctt")
+    ctt_data = parse_ctt(INPUT)
 
+    #print(ctt_data)
     # Generate initial feasible solution
-    timetable = generate_initial_solution()
+    #timetable = generate_initial_solution()
     #print("Initial Solution Generated")
     #print(initial_solution)
-    with open("output/initial_solution.out", "w") as file:  # Open the file in write mode
-            for day in timetable:
-                for period in timetable[day]:
-                    for room in timetable[day][period]:
-                        if timetable[day][period][room] != -1:
-                            file.write(f"{timetable[day][period][room]} {room} {day} {period}\n")
+    #with open("output/initial_solution.out", "w") as file:  # Open the file in write mode
+            #for day in timetable:
+                #for period in timetable[day]:
+                    #for room in timetable[day][period]:g
+                        #if timetable[day][period][room] != -1:
+                            #file.write(f"{timetable[day][period][room]} {room} {day} {period}\n")
 
     # Save the initial solution
     #save_output(initial_solution, "mnt/data/solution.csv", "mnt/data/solution.out")
@@ -118,4 +120,4 @@ if __name__ == "__main__":
     #print(optimized_solution)
 
     # Save the optimized solution
-    save_output(optimized_solution, "mnt/data/comp02.csv", "mnt/data/comp02.out")
+    save_output(optimized_solution, "mnt/data/comp01.csv", OUTPUT)

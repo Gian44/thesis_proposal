@@ -1,9 +1,10 @@
 import random
 from ctt_parser import read_ctt_file
 import copy
+from config import *
 
 # Read data from .ctt file
-filename = 'mnt/data/comp02.ctt'  # Replace with your .ctt file name
+filename = INPUT  # Replace with your .ctt file name
 courses, rooms, unavailability_constraints, curricula, days, periods_per_day= read_ctt_file(filename)
 # Initialize timetable: days x periods_per_day x rooms
 # -1 indicates empty slots
