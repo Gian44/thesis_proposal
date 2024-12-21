@@ -1,2 +1,2 @@
-INPUT = 'mnt/data/comp21.ctt'
-OUTPUT = 'mnt/data/comp21.out'
+INPUT = 'mnt/data/comp02.ctt'
+OUTPUT = 'mnt/data/comp02.out'

@@ -4,6 +4,7 @@ import random
 from deap import base, creator, tools
 from initialize_population2 import assign_courses
 from functools import partial
+import time
 
 # Initialize globals for course and room data, which will be set in main()
 courses = []
@@ -150,398 +151,140 @@ def evaluate_schedule(particle, rooms, courses, curricula, constraints):
 
 toolbox = base.Toolbox()
 
-def updateParticle(data, part, personal_best, local_best, chi, c1, c2, constraints):
+def updateParticle(data, particle, personal_best, global_best, chi, c1, c2, constraints):
     """
-    Updates a randomly selected particle's velocity and applies it to modify the schedule.
-    Uses neighborhood operations for local search (personal best and local best).
-    Ensures the move is beneficial by checking penalties before and after.
+    Updates the particle using PSO velocity formula.
+    Implements moves and swaps for Room, Day, Timeslot systematically.
+    Each move selects a random course and ensures feasibility after each operation.
     """
+    r1, r2 = random.random(), random.random()  # Random coefficients
+    days = data["num_days"]
+    periods = data["periods_per_day"]
+    rooms = data["rooms"]
+    room_map = {room["id"]: idx for idx, room in enumerate(rooms)}
+    reverse_room_map = {idx: room["id"] for idx, room in enumerate(rooms)}
 
-    r1, r2 = random.random(), random.random()
+    # Function to select a random entry
+    def select_random_entry():
+        index = random.randint(0, len(particle) - 1)
+        return index, particle[index]
 
-    # Map rooms to indices
-    room_map = {room['id']: i for i, room in enumerate(data['rooms'])}
-    reverse_room_map = {i: room['id'] for i, room in enumerate(data['rooms'])}
+    # Function to find corresponding personal and global best entries
+    def get_best_entries(entry):
+        course_id = entry["course_id"]
+        personal_best_entry = next((e for e in personal_best if e["course_id"] == course_id), None) if personal_best else None
+        global_best_entry = next((e for e in global_best if e["course_id"] == course_id), None) if global_best else None
+        return personal_best_entry, global_best_entry
 
-    # Randomly select a course to update
-    selected_course_index = random.randint(0, len(part) - 1)
-    entry = part[selected_course_index]
+    # Function to apply velocity-based update
+    def calculate_new_values(entry, p_best_entry, g_best_entry):
+        current_day = entry["day"]
+        current_period = entry["period"]
+        current_room_index = room_map[entry["room_id"]]
 
-    # Save the original penalty
-    original_penalty = evaluate_schedule(part, data["rooms"], data["courses"], data["curricula"], constraints)
+        # Personal and global best values for velocity calculation
+        p_best_day = p_best_entry["day"] if p_best_entry else current_day
+        g_best_day = g_best_entry["day"] if g_best_entry else current_day
+        p_best_period = p_best_entry["period"] if p_best_entry else current_period
+        g_best_period = g_best_entry["period"] if g_best_entry else current_period
+        p_best_room_index = room_map[p_best_entry["room_id"]] if p_best_entry else current_room_index
+        g_best_room_index = room_map[g_best_entry["room_id"]] if g_best_entry else current_room_index
 
-    # Get the best positions from personal best, and local best
-    best_entry = personal_best[selected_course_index] if personal_best and selected_course_index < len(personal_best) else entry
-    local_best_entry = local_best[selected_course_index] if local_best and selected_course_index < len(local_best) else entry
+        # Calculate velocity components
+        velocity_day = chi * (c1 * r1 * (p_best_day - current_day) + c2 * r2 * (g_best_day - current_day))
+        velocity_period = chi * (c1 * r1 * (p_best_period - current_period) + c2 * r2 * (g_best_period - current_period))
+        velocity_room = chi * (c1 * r1 * (p_best_room_index - current_room_index) + c2 * r2 * (g_best_room_index - current_room_index))
 
-    # Convert room ids to indices for velocity calculation
-    best_room_index = room_map[best_entry["room_id"]]
-    local_best_room_index = room_map[local_best_entry["room_id"]]
-    current_room_index = room_map[entry["room_id"]]
+        # Apply updates with modulo clamping
+        new_day = (current_day + round(velocity_day)) % days
+        new_period = (current_period + round(velocity_period)) % periods
+        new_room_index = (current_room_index + round(velocity_room)) % len(rooms)
+        new_room = reverse_room_map[new_room_index]
 
-    # Compute velocity components for day, period, and room
-    velocity_day = chi * (c1 * r1 * (best_entry["day"] - entry["day"]) + c2 * r2 * (local_best_entry["day"] - entry["day"]))
-    velocity_period = chi * (c1 * r1 * (best_entry["period"] - entry["period"]) + c2 * r2 * (local_best_entry["period"] - entry["period"]))
-    velocity_room = chi * (c1 * r1 * (best_room_index - current_room_index) + c2 * r2 * (local_best_room_index - current_room_index))
+        return new_day, new_period, new_room
 
-    # Apply custom rounding to the velocities
-    new_day = entry["day"] + round(velocity_day)
-    new_period = entry["period"] + round(velocity_period)
+    # Moves and swaps
+    moves = [
+        "Room, Day, Timeslot",
+        "Day, Timeslot",
+        "Day",
+        "Timeslot",
+        "Room and Day",
+        "Room and Timeslot",
+        "Room",
+    ]
 
-    min_day = min(data["num_days"] - 1, new_day)
-    min_period = min(data["periods_per_day"] - 1, new_period)
+    for move in moves:
+        i, entry = select_random_entry()  # Select a random course
+        personal_best_entry, global_best_entry = get_best_entries(entry)
+        original_state = (entry["day"], entry["period"], entry["room_id"])
 
-    # Clamp new_day and new_period within valid bounds
-    new_day = max(0, min_day)
-    new_period = max(0, min_period)
+        # Calculate the original penalty
+        original_penalty = evaluate_schedule(particle, rooms, data["courses"], data["curricula"], constraints)[0]
 
-    # Calculate new room index based on the velocity, and map back to room ID
-    new_room_index = current_room_index + round(velocity_room)
-    new_room_index = max(0, min(len(data["rooms"]) - 1, new_room_index))  # Clamp to valid room index
-    new_room = reverse_room_map[new_room_index]  # Convert index back to room ID
+        # Apply move
+        if move == "Room, Day, Timeslot":
+            new_day, new_period, new_room = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
 
-    # Save the original state to revert in case of infeasibility
-    original_state = (entry["day"], entry["period"], entry["room_id"])
-
-    # Temporarily assign the new values to the entry
-    entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
-
-    # Recalculate penalty after the move
-    new_penalty = evaluate_schedule(part, data["rooms"], data["courses"], data["curricula"], constraints)
-
-    # Check feasibility and penalty improvement
-    if not is_feasible(part, constraints, data["courses"], data["curricula"]) or new_penalty >= original_penalty:
-        # Revert changes if not feasible or penalty did not improve
-        entry["day"], entry["period"], entry["room_id"] = original_state
-        print(f"Update Particle: Move reverted - Original Penalty: {original_penalty}, New Penalty: {new_penalty}")
-    else:
-        print(f"Update Particle: Move accepted - Penalty improved from {original_penalty} to {new_penalty}")
-
-def time_move(particle, constraints, rooms, courses, days, periods):
-    """
-    Implements the time move:
-    1. Randomly selects a lecture and a new time slot (day, period).
-    2. Verifies feasibility and evaluates penalty before deciding to accept or revert the move.
-    """
-
-    # Step 1: Randomly select a lecture
-    entry = random.choice(particle)
-    original_day, original_period = entry["day"], entry["period"]
-
-    print(f"Time Move: Selected lecture at Day {original_day}, Period {original_period}")
-
-    # Calculate the original penalty before the move
-    original_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
-
-    # Step 2: Try new time slots starting from a random day and period
-    random_day_offset = random.randint(0, days - 1)
-    random_period_offset = random.randint(0, periods - 1)
-
-    for d in range(days):
-        for p in range(periods):
-            new_day = (d + random_day_offset) % days
-            new_period = (p + random_period_offset) % periods
-
-            # Skip the same time slot as the original
-            if new_day == original_day and new_period == original_period:
-                continue
-
-            # Temporarily move the lecture to the new time slot
+        elif move == "Day, Timeslot":
+            new_day, new_period, _ = calculate_new_values(entry, personal_best_entry, global_best_entry)
             entry["day"], entry["period"] = new_day, new_period
 
-            # Step 3: Check feasibility
-            if is_feasible(particle, constraints, courses, curricula):
-                # Step 4: Evaluate the new penalty
-                new_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
+        elif move == "Day":
+            new_day, _, _ = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["day"] = new_day
 
-                # Accept the move if it reduces the penalty
-                if new_penalty < original_penalty:
-                    print(f"Time Move: Successful! Penalty improved from {original_penalty} to {new_penalty}.")
-                    return  # Keep the move
-                else:
-                    print(f"Time Move: No improvement. Penalty {new_penalty} >= {original_penalty}. Reverting...")
+        elif move == "Timeslot":
+            _, new_period, _ = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["period"] = new_period
 
-            # Revert the move if infeasible or no improvement
-            entry["day"], entry["period"] = original_day, original_period
+        elif move == "Room and Day":
+            new_day, _, new_room = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["day"], entry["room_id"] = new_day, new_room
 
-    # Step 5: Revert if no valid move was found
-    print(f"Time Move: Reverted to original Day {original_day}, Period {original_period}. No valid improvement found.")
+        elif move == "Room and Timeslot":
+            _, new_period, new_room = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["period"], entry["room_id"] = new_period, new_room
 
-def room_move(particle, constraints, rooms, courses, days, periods):
-    """
-    Implements the room move:
-    1. Randomly selects a lecture and a target room.
-    2. Checks for conflicts in the target room.
-    3. Verifies feasibility and evaluates penalty before deciding to accept or revert the move.
-    """
-    # Select a random lecture to move
-    entry = random.choice(particle)
-    original_room = entry["room_id"]
-    day, period = entry["day"], entry["period"]
+        elif move == "Room":
+            _, _, new_room = calculate_new_values(entry, personal_best_entry, global_best_entry)
+            entry["room_id"] = new_room
 
-    print(f"Room Move: Selected lecture in Room {original_room}, Day {day}, Period {period}")
+        # Check feasibility and penalty, revert if necessary
+        new_penalty = evaluate_schedule(particle, rooms, data["courses"], data["curricula"], constraints)[0]
+        if not is_feasible(particle, constraints, data["courses"], data["curricula"]) or new_penalty >= original_penalty:
+            entry["day"], entry["period"], entry["room_id"] = original_state
+            print(f"{move} failed. Reverting.")
+        else:
+            print(f"{move} successful. Penalty improved from {original_penalty} to {new_penalty}.")
 
-    # Calculate the original penalty before moving
-    original_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
+        # Swap for the current move
+        if len(particle) > 1:
+            swap_index, swap_entry = select_random_entry()
+            swap_original_state = (swap_entry["day"], swap_entry["period"], swap_entry["room_id"])
 
-    # Randomly shuffle rooms and try them sequentially
-    room_offset = random.randint(0, len(rooms) - 1)
-    for i in range(len(rooms)):
-        room_index = (i + room_offset) % len(rooms)
-        selected_room = rooms[room_index]
+            # Swap attributes based on the move
+            if move in ["Room, Day, Timeslot", "Day, Timeslot", "Room and Day", "Room and Timeslot"]:
+                entry["day"], entry["period"], entry["room_id"], swap_entry["day"], swap_entry["period"], swap_entry["room_id"] = (
+                    swap_entry["day"], swap_entry["period"], swap_entry["room_id"],
+                    entry["day"], entry["period"], entry["room_id"]
+                )
+            elif move == "Day":
+                entry["day"], swap_entry["day"] = swap_entry["day"], entry["day"]
+            elif move == "Timeslot":
+                entry["period"], swap_entry["period"] = swap_entry["period"], entry["period"]
+            elif move == "Room":
+                entry["room_id"], swap_entry["room_id"] = swap_entry["room_id"], entry["room_id"]
 
-        # Skip if the selected room is the same as the current room
-        if selected_room["id"] == original_room:
-            continue
-
-        # Temporarily move the lecture to the new room
-        entry["room_id"] = selected_room["id"]
-
-        # Check for feasibility
-        if is_feasible(particle, constraints, courses, curricula):
-            # Calculate the new penalty
-            new_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
-
-            # Accept the move if it improves the penalty
-            if new_penalty < original_penalty:
-                print(f"Room Move: Successful! Penalty improved from {original_penalty} to {new_penalty}.")
-                return  # Keep the move
+            # Check feasibility and penalty, revert if necessary
+            swap_penalty = evaluate_schedule(particle, rooms, data["courses"], data["curricula"], constraints)[0]
+            if not is_feasible(particle, constraints, data["courses"], data["curricula"]) or swap_penalty >= original_penalty:
+                entry["day"], entry["period"], entry["room_id"] = original_state
+                swap_entry["day"], swap_entry["period"], swap_entry["room_id"] = swap_original_state
+                print(f"{move} swap failed. Reverting.")
             else:
-                print(f"Room Move: No improvement. Penalty {new_penalty} >= {original_penalty}. Reverting...")
-        
-        # Revert the move if infeasible or no improvement
-        entry["room_id"] = original_room
-
-    print(f"Room Move: Reverted to original Room {original_room}. No valid improvement found.")
-
-def room_stability_move(particle, constraints, courses, rooms):
-    """
-    Implements room stability move closely following the logic of the provided move_2 function.
-    1. Randomly selects a course and moves all its lectures to a new room.
-    2. Resolves conflicts by reassigning conflicting lectures to the original room.
-    3. Checks for feasibility and evaluates soft constraints to decide whether to keep the move.
-    """
-
-    # Step 1: Map room IDs for lookup
-    room_map = {room["id"]: room for room in rooms}
-
-    # Step 2: Randomly select a course
-    course_ids = list(set(lecture["course_id"] for lecture in particle))
-    if not course_ids:
-        return particle  # No courses to move
-
-    selected_course_id = random.choice(course_ids)
-    course_lectures = [lecture for lecture in particle if lecture["course_id"] == selected_course_id]
-
-    # Step 3: Randomly select a new room
-    all_room_ids = list(room_map.keys())
-    new_room_id = random.choice(all_room_ids)
-
-    # Step 4: Track original solution state and conflicts
-    new_solution = [lecture.copy() for lecture in particle]  # Create a deep copy of the solution
-    changes = []  # Track lectures moved
-    conflicts = []  # Track conflicts resolved
-
-    # Step 5: Attempt to reassign all lectures of the course to the new room
-    for lecture in course_lectures:
-        day, period, current_room_id = lecture["day"], lecture["period"], lecture["room_id"]
-
-        # Check for conflicts in the new room at the same day-period
-        conflicting_lectures = [
-            l for l in new_solution
-            if l["room_id"] == new_room_id and l["day"] == day and l["period"] == period
-        ]
-
-        # Handle conflicting lectures
-        for conflict in conflicting_lectures:
-            conflicts.append((conflict, conflict["room_id"]))  # Backup conflict's state
-            conflict["room_id"] = current_room_id  # Move conflict to the old room
-
-        # Update the lecture to the new room
-        changes.append((lecture, lecture["room_id"]))  # Backup original state
-        lecture["room_id"] = new_room_id
-
-    # Step 6: Check feasibility
-    if not is_feasible(new_solution, constraints, courses, curricula):
-        # Revert all changes and conflicts if infeasible
-        for lecture, original_room in changes:
-            lecture["room_id"] = original_room
-        for conflict, original_room in conflicts:
-            conflict["room_id"] = original_room
-        print("Room Stability Move: Reverted due to infeasibility.")
-        return particle  # Return original solution
-
-    # Step 7: Evaluate soft constraints
-    original_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
-    new_penalty = evaluate_schedule(particle, rooms, courses, curricula, constraints)
-
-    # Step 8: Accept or reject the move
-    if new_penalty < original_penalty:
-        print(f"Room Stability Move: Successful - Penalty improved from {original_penalty} to {new_penalty}")
-        return new_solution  # Accept the improved solution
-    else:
-        # Revert changes if no improvement
-        for lecture, original_room in changes:
-            lecture["room_id"] = original_room
-        for conflict, original_room in conflicts:
-            conflict["room_id"] = original_room
-        print("Room Stability Move: Reverted - No improvement.")
-        return particle  # Return original solution
-
-def calculate_individual_room_stability_penalty(lectures, room_id=None):
-    """
-    Calculate the room stability penalty for a given set of lectures.
-    If `room_id` is provided, assumes lectures are assigned to this room for penalty calculation.
-    """
-    if room_id is None:
-        room_id = lectures[0]["room_id"]  # Assume all lectures are in the same room
-
-    unique_rooms_used = len(set(lecture["room_id"] for lecture in lectures))
-    return max(0, unique_rooms_used - 1)  # Penalty is the number of additional rooms used
-
-def min_working_days_move(particle, constraints, courses, rooms, num_days):
-    violating_courses = [
-        c for c in courses if len(set(e["day"] for e in particle if e["course_id"] == c["id"])) < c["min_days"]
-    ]
-    if not violating_courses:
-        print("Min Working Days Move: No violating courses found.")
-        return
-
-    course = random.choice(violating_courses)
-    course_id = course["id"]
-    print(f"Min Working Days Move: Selected Course {course_id} with violations.")
-
-    original_penalty = calculate_min_days_violation_penalty(particle, courses)
-    course_lectures = [e for e in particle if e["course_id"] == course_id]
-    days_used = set(lecture["day"] for lecture in course_lectures)
-    overcrowded_days = {day for day in days_used if sum(lecture["day"] == day for lecture in course_lectures) > 1}
-
-    for lecture in course_lectures:
-        if lecture["day"] not in overcrowded_days:
-            continue
-
-        original_day, original_room = lecture["day"], lecture["room_id"]
-
-        for day in range(num_days):
-            if day in days_used:
-                continue
-
-            for room in rooms:
-                if room["capacity"] < course["num_students"]:
-                    continue
-
-                lecture["day"], lecture["room_id"] = day, room["id"]
-
-                if is_feasible(particle, constraints, courses, curricula):
-                    new_penalty = calculate_min_days_violation_penalty(particle, courses)
-                    if new_penalty < original_penalty:
-                        print(f"Min Working Days Move: Successful move for Course {course_id}.")
-                        return
-
-                lecture["day"], lecture["room_id"] = original_day, original_room
-
-    print(f"Min Working Days Move: Reverted - No valid moves for Course {course_id}")
-
-
-def curriculum_compactness_move(particle, constraints, curricula, rooms, num_days, num_periods, courses):
-    # Step 1: Randomly select a curriculum
-    curriculum = random.choice(curricula)
-    curriculum_courses = curriculum["courses"]
-    curriculum_lectures = [e for e in particle if e["course_id"] in curriculum_courses]
-
-    # Calculate the number of students for the curriculum by summing its courses' students
-    curriculum_num_students = sum(
-        course["num_students"] for course in courses if course["id"] in curriculum_courses
-    )
-
-    # Step 2: Identify lectures that are not adjacent to any other lectures
-    non_adjacent_lectures = []
-    for lecture in curriculum_lectures:
-        day, period = lecture["day"], lecture["period"]
-        is_adjacent = False
-
-        for other_lecture in curriculum_lectures:
-            if other_lecture == lecture:
-                continue
-            if other_lecture["day"] == day and abs(other_lecture["period"] - period) == 1:
-                is_adjacent = True
-                break
-
-        if not is_adjacent:
-            non_adjacent_lectures.append(lecture)
-
-    if not non_adjacent_lectures:
-        return  # No non-adjacent lectures, exit early
-
-    # Step 3: Randomly select a non-adjacent lecture
-    selected_lecture = random.choice(non_adjacent_lectures)
-    original_day, original_period, original_room = (
-        selected_lecture["day"],
-        selected_lecture["period"],
-        selected_lecture["room_id"],
-    )
-
-    # Step 4: Try to find the best adjacent slot and room
-    random_day_offset = random.randint(0, num_days - 1)
-    random_period_offset = random.randint(0, num_periods - 1)
-    random_room_offset = random.randint(0, len(rooms) - 1)
-
-    for d in range(num_days):
-        for p in range(num_periods):
-            new_day = (d + random_day_offset) % num_days
-            new_period = (p + random_period_offset) % num_periods
-
-            # Check for adjacent lectures
-            has_adjacent = any(
-                other_lecture["day"] == new_day and abs(other_lecture["period"] - new_period) == 1
-                for other_lecture in curriculum_lectures
-                if other_lecture != selected_lecture
-            )
-            if not has_adjacent:
-                continue
-
-            for r in range(len(rooms)):
-                room = rooms[(r + random_room_offset) % len(rooms)]
-                if room["capacity"] < curriculum_num_students:
-                    continue
-
-                selected_lecture["day"], selected_lecture["period"], selected_lecture["room_id"] = new_day, new_period, room["id"]
-
-                if is_feasible(particle, constraints, courses, curricula):
-                    print(f"Curriculum Compactness Move: Moved lecture to day {new_day}, period {new_period}, room {room['id']}")
-                    return  # Successful move
-
-    # Step 6: Revert changes if no valid move is found
-    selected_lecture["day"], selected_lecture["period"], selected_lecture["room_id"] = (
-        original_day,
-        original_period,
-        original_room,
-    )
-    print(f"Curriculum Compactness Move: No valid move found for curriculum {curriculum['id']}")
-
-# Apply neighborhood moves
-def apply_neighborhood_moves(particle, data, constraints, days, periods):
-    moves = [
-        (time_move, 1),
-        (room_move, 1),
-        (room_stability_move, 1),
-        (min_working_days_move, 1),
-        (curriculum_compactness_move, 0.1),
-    ]
-    
-    # Create weighted choices
-    weighted_moves = [(move, weight) for move, weight in moves for _ in range(int(weight * 10))]
-    selected_move = random.choice(weighted_moves)[0]  # Randomly select based on weights
-    
-    # Execute the selected move
-    if selected_move == curriculum_compactness_move:
-        selected_move(particle, constraints, data["curricula"], data["rooms"], days, periods, courses)
-    elif selected_move == min_working_days_move:
-        selected_move(particle, constraints, data["courses"], data["rooms"], days)
-    elif selected_move == room_stability_move:
-        selected_move(particle, constraints, data["courses"], data["rooms"])
-    else:
-        selected_move(particle, constraints, data["rooms"], data["courses"], days, periods)
+                print(f"{move} swap successful. Penalty improved from {original_penalty} to {swap_penalty}.")
 
 def is_feasible(schedule, constraints, courses, curricula):
     """
@@ -638,7 +381,7 @@ def get_teacher(courses, course_id):
             return course["teacher"]
     return None
 
-def convertQuantum(swarm, rcloud, centre, min_distance, constraints, courses, curricula, rooms):
+def convertQuantum(swarm, rcloud, centre, min_distance, constraints, courses, curricula, rooms, days, periods):
     """
     Converts all particles in the swarm to quantum particles.
     Reinitializes each particle's position around the swarm's global best (centre) using Gaussian distribution.
@@ -660,12 +403,17 @@ def convertQuantum(swarm, rcloud, centre, min_distance, constraints, courses, cu
             for entry, best_entry in zip(part, centre):
                 best_room_index = room_map[best_entry["room_id"]]
 
-                new_day = max(0, int(best_entry["day"] + rcloud * random.gauss(0, 1)))  # Random movement in day
-                new_period = max(0, int(best_entry["period"] + rcloud * random.gauss(0, 1)))  # Random movement in period
+                # Apply Gaussian random movements
+                new_day = int(best_entry["day"] + rcloud * random.gauss(0, 1))
+                new_period = int(best_entry["period"] + rcloud * random.gauss(0, 1))
+                new_room_index = int(best_room_index + rcloud * random.gauss(0, 1))
 
-                # Allow room to be changed, use the best room or sample a new one randomly
-                new_room_index = int(best_room_index + rcloud * random.gauss(0, 1))  # Randomize new room
-                new_room_index = max(0, min(len(rooms) - 1, new_room_index))  # Clamp within valid room indices
+                # Apply modulo-based clamping for cyclic wrapping
+                new_day %= days  # Replace with the actual number of days in the problem
+                new_period %= periods    # Replace with the actual number of periods in the problem
+                new_room_index %= len(rooms)
+
+                # Convert index back to room ID
                 new_room = reverse_room_map[new_room_index]
 
                 # Ensure diversity by checking minimum distance
@@ -693,7 +441,7 @@ def convertQuantum(swarm, rcloud, centre, min_distance, constraints, courses, cu
         part.best = None  # Reset particle's personal best to allow exploration
 
 # Main loop to simulate the Multi-Swarm Particle Swarm Optimization
-def main(data, max_iterations=2000, verbose=True):
+def main(data, max_iterations=500, verbose=True):
     global courses, rooms, curricula
     courses = data["courses"]
     rooms = data["rooms"]
@@ -717,14 +465,17 @@ def main(data, max_iterations=2000, verbose=True):
     NPARTICLES = 5
     NEXCESS = 3
     RCLOUD = 0.3
-    NDIM = 3
-    BOUNDS = [0, len(rooms) * days * periods]
-    min_distance = 3  # Minimum distance threshold for diversity
+    NDIM = 3 * len(rooms) * days * periods
+    BOUNDS = len(rooms) * days * periods
+    min_distance = 3 
 
     population = [toolbox.swarm(n=NPARTICLES) for _ in range(NSWARMS)]
 
 
     chi, c1, c2 = 0.729, 1.49445, 1.49445
+
+    # Start the timer
+    start_time = time.time()
 
     # Track the best global fitness
     best_global_fitness = float('inf')
@@ -762,17 +513,14 @@ def main(data, max_iterations=2000, verbose=True):
         print(f"Particle {i + 1}: Fitness = {fitness:.2f}")
 
     for iteration in range(max_iterations):
-        rexcl = ((BOUNDS[1] - BOUNDS[0])) / (2 * len(population)**(1.0 / NDIM))
+        rexcl = (BOUNDS) / (5 * len(population)**(1.0 / NDIM))
         print("Rexcl: ", rexcl)
         if verbose:
             print(f"Iteration {iteration + 1}/{max_iterations}")
 
         for i, swarm in enumerate(population):
             for part in swarm:
-                if random.random() < 0.7:
-                    apply_neighborhood_moves(part, data, constraints, days, periods) #neighborhood moves
-                else:
-                    updateParticle(data, part, part.best, swarm.best, chi, c1, c2, constraints) #swap
+                updateParticle(data, part, part.best, swarm.best, chi, c1, c2, constraints) #swap
 
                 # Re-evaluate the fitness after updating the particle
                 part.fitness.values = toolbox.evaluate(part)
@@ -835,6 +583,7 @@ def main(data, max_iterations=2000, verbose=True):
                         )
                     )
                     print("Distance: ", distance)
+                    print("Rexcl: ", rexcl)
                     if distance < rexcl:
                         print("Some swarm needs to be reinitialized.")
                         reinit_swarms.add(s1 if population[s1].bestfit <= population[s2].bestfit else s2)
@@ -849,7 +598,9 @@ def main(data, max_iterations=2000, verbose=True):
                     constraints, 
                     courses, 
                     curricula,
-                    rooms
+                    rooms,
+                    days,
+                    periods
                 )
                 for part in population[s]:
                     part.fitness.values = toolbox.evaluate(part)
@@ -888,17 +639,21 @@ def main(data, max_iterations=2000, verbose=True):
                 initial_fitness_values.append(part.fitness.values[0])
 
             population.append(new_swarm)
-            
+
         # Stop if the fitness meets the target of 5 or less
         if best_global_fitness <= 0:
             print(f"\nStopping early as target fitness of 0 was reached: {best_global_fitness}")
             break
 
-
+    # End the timer
+    end_time = time.time()
+    elapsed_time = end_time - start_time
     # Determine the best particle across all swarms based on bestfit values if available
     valid_swarms = [swarm for swarm in population if swarm.best is not None and swarm.bestfit is not None]
 
     print("\nOptimization Completed.")
+    
+    print(f"\nOptimization completed in {elapsed_time:.2f} seconds.")
     print("Initial Fitness Values Before Optimization:")
     for i, fitness in enumerate(initial_fitness_values):
         print(f"Particle {i + 1}: Fitness = {fitness:.2f}")
