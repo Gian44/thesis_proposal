@@ -415,48 +415,6 @@ def get_teacher(courses, course_id):
             return course["teacher"]
     return None
 
-def convertQuantum(swarm, rcloud, centre, constraints, courses, curricula, rooms, days, periods):
-    """
-    Converts all particles in the swarm to quantum particles.
-    Reinitializes each particle's position around the swarm's global best (centre) using Gaussian distribution.
-    Ensures a minimum distance from previous positions and checks feasibility.
-    """
-    for part in swarm:
-        # Skip reinitializing the best particle
-        if part == swarm.best:
-            continue
-
-        # Generate new positions around the best-found position (centre) for each course assignment
-        for entry, best_entry in zip(part, centre):
-            best_room_index = room_map[best_entry["room_id"]]
-
-            # Apply Gaussian random movements
-            new_day = round(best_entry["day"] + rcloud * random.gauss(0, 1))
-            new_period = round(best_entry["period"] + rcloud * random.gauss(0, 1))
-            new_room_index = round(best_room_index + rcloud * random.gauss(0, 1))
-
-            # Apply modulo-based clamping for cyclic wrapping
-            new_day %= days  # Replace with the actual number of days in the problem
-            new_period %= periods    # Replace with the actual number of periods in the problem
-            new_room_index %= len(rooms)
-
-            # Convert index back to room ID
-            new_room = reverse_room_map[new_room_index]
-            
-            # Temporarily assign new values to this particle's entry
-            original_entry = (entry["day"], entry["period"], entry["room_id"])
-            entry["day"], entry["period"], entry["room_id"] = new_day, new_period, new_room
-
-            if is_feasible(part, constraints, courses, curricula):
-                continue
-            else:
-                entry["day"], entry["period"], entry["room_id"] = original_entry
-
-
-        # Update fitness after reinitialization
-        part.fitness.values = toolbox.evaluate(part)
-        part.best = None
-
 # Main loop to simulate the Multi-Swarm Particle Swarm Optimization
 def main(data, max_iterations=500, verbose=True):
     global courses, rooms, curricula, room_map, reverse_room_map
@@ -482,9 +440,7 @@ def main(data, max_iterations=500, verbose=True):
     )
 
     NSWARMS = 1
-    NPARTICLES = 5
-    NEXCESS = 3
-    RCLOUD = 0.5
+    NPARTICLES = 20
     NDIM = 3
     BOUNDS = len(rooms) * days * periods 
     
@@ -498,7 +454,6 @@ def main(data, max_iterations=500, verbose=True):
     best_global_particle_idx = None
     initial_fitness_values = []
     last_global_best_update = -1
-    init_flags = [False] * NSWARMS  # Init flags for randomization markers
 
     for swarm in population:
         swarm.best = None
@@ -532,124 +487,39 @@ def main(data, max_iterations=500, verbose=True):
         print("Rexcl: ", rexcl) 
         print("Total Swarms: ", len(population))
 
-        # Anti-Convergence
-        print("Anti-Convergence check")
-        all_converged = True
-        worst_swarm_idx = None
-        worst_swarm_fitness = float('-inf') # Initial fitness
-
-        for i, swarm in enumerate(population):
-            for p1, p2 in itertools.combinations(swarm, 2):
-                distance = math.sqrt(
-                    sum(
-                        ((entry1["day"] - entry2["day"]) / days) ** 2 +
-                        ((entry1["period"] - entry2["period"]) / periods) ** 2 +
-                        ((room_map[entry1["room_id"]] - room_map[entry2["room_id"]]) / len(rooms)) ** 2
-                        for entry1, entry2 in zip(p1, p2)
-                    )
-                )
-                if distance > 2 * rexcl:
-                    all_converged = False
-                    print("Not all have converged yet")
-                    break
-
-            if all_converged and swarm.bestfit.values[0] > worst_swarm_fitness:
-                worst_swarm_fitness = swarm.bestfit.values[0]
-                worst_swarm_idx = i
-                swarm.bestfit.values[0]
-                print("Index: ", worst_swarm_idx)
-                print("Fitness: ", worst_swarm_fitness)
-        
-        if all_converged and worst_swarm_idx is not None:
-            print(f"Randomizing worst swarm: {worst_swarm_idx}")
-            init_flags[worst_swarm_idx] = True
-
-        # Adding swarms
-        if all_converged and len(population) < NSWARMS + NEXCESS:
-            new_swarm = toolbox.swarm(n=NPARTICLES)
-            new_swarm.best = None
-            new_swarm.bestfit = creator.FitnessMin((float('inf'),))
-            new_swarm.no_improvement_iters = 0
-
-            # Log the fitness of the new swarm
-            print("\nNew Swarm Added:")
-            for part in new_swarm:
-                part.fitness.values = toolbox.evaluate(part)
-                part.best = toolbox.clone(part)
-                part.bestfit = creator.FitnessMin(part.fitness.values)
-                if new_swarm.best is None or part.fitness < new_swarm.bestfit:
-                    new_swarm.best = toolbox.clone(part)
-                    new_swarm.bestfit.values = part.fitness.values
-                # Log the fitness
-                print(f"New Particle Fitness: {part.fitness.values[0]:.2f}")
-                initial_fitness_values.append(part.fitness.values[0])
-
-            population.append(new_swarm)
-            init_flags.append(False) 
-
-        # Exclusion
-        print("Exclusion check")
-        reinit_swarms = set()
-        for s1, s2 in itertools.combinations(range(len(population)), 2):
-            if population[s1].best and population[s2].best and not (s1 in reinit_swarms or s2 in reinit_swarms):
-                distance = math.sqrt(
-                    sum(
-                        ((entry1["day"] - entry2["day"]) / days) ** 2 +
-                        ((entry1["period"] - entry2["period"]) / periods) ** 2 +
-                        ((room_map[entry1["room_id"]] - room_map[entry2["room_id"]]) / len(rooms)) ** 2
-                        for entry1, entry2 in zip(population[s1].best, population[s2].best)
-                    )
-                )
-                if distance < rexcl:
-                    reinit_swarms.add(s1 if population[s1].bestfit <= population[s2].bestfit else s2)
-
-        for s in reinit_swarms:
-            print(f"Reinitializing swarm: {s}")
-            init_flags[s] = True
-
         # Update and Randomize Particles
         for i, swarm in enumerate(population):
-            if init_flags[i]:
-                convertQuantum(swarm, RCLOUD, swarm.best, constraints, courses, curricula, rooms, days, periods)
-                init_flags[i] = False
-                for j, part in enumerate(swarm):
-                    print("Particle "+ str((5*i)+(j+1)) + " (Fitness: "+ str(part.fitness.values[0]) + ")")
-                    if swarm.best is None or part.fitness.values < swarm.bestfit.values:
-                        swarm.best = toolbox.clone(part)
-                        swarm.bestfit.values = part.fitness.values
-                print(f"Swarm has been reinitialized. Swarm bestfit is now {swarm.bestfit}.")
-            else:
-                for j, part in enumerate(swarm):
-                    print("Particle "+ str((5*i)+(j+1)) + " (Fitness: "+ str(part.fitness.values[0]) + ")")
-                    prev_pos = toolbox.clone(part)
-                    if part == swarm.best:
-                        print("This is the local best particle. Fitness: ", swarm.best.fitness)
-                        continue  # Skip the rest of the loop for this particle
-                    updateParticle(data, part, part.best, swarm.best, chi, c1, c2, constraints)
-                     
-                     # Re-evaluate the fitness after updating the particle
-                    if prev_pos != part:
-                        part.fitness.values = toolbox.evaluate(part)
-                    """ 
-                    # Print current best in swarm and the current part fitness
-                    print("Swarm bestfit before comparison:", swarm.bestfit.values)
-                    print("Particle bestfit value: ", part.bestfit.values)
-                    print("Current particle fitness:", part.fitness.values)
-                    """
-                    if part.bestfit is None or part.fitness.values[0] < part.bestfit.values[0]:
-                        part.best = toolbox.clone(part)
-                        part.bestfit.values = part.fitness.values
-                        print("Updated part bestfit:", part.bestfit.values)
+            for j, part in enumerate(swarm):
+                print("Particle "+ str((5*i)+(j+1)) + " (Fitness: "+ str(part.fitness.values[0]) + ")")
+                prev_pos = toolbox.clone(part)
+                if part == swarm.best:
+                    print("This is the local best particle. Fitness: ", swarm.best.fitness)
+                    continue  # Skip the rest of the loop for this particle
+                updateParticle(data, part, part.best, swarm.best, chi, c1, c2, constraints)
+                    
+                    # Re-evaluate the fitness after updating the particle
+                if prev_pos != part:
+                    part.fitness.values = toolbox.evaluate(part)
+                """ 
+                # Print current best in swarm and the current part fitness
+                print("Swarm bestfit before comparison:", swarm.bestfit.values)
+                print("Particle bestfit value: ", part.bestfit.values)
+                print("Current particle fitness:", part.fitness.values)
+                """
+                if part.bestfit is None or part.fitness.values[0] < part.bestfit.values[0]:
+                    part.best = toolbox.clone(part)
+                    part.bestfit.values = part.fitness.values
+                    print("Updated part bestfit:", part.bestfit.values)
 
-                    if swarm.best is None or part.fitness.values[0] < swarm.bestfit.values[0]:
-                        swarm.best = toolbox.clone(part)
-                        swarm.bestfit.values = part.fitness.values
-                        swarm.no_improvement_iters = 0
-                        print("****************UPDATED SWARM BESTFIT WITH NEW BEST PARTICLE****************")
-                    else:
-                        swarm.no_improvement_iters += 1
-                        print("No improvement in swarm bestfit.")
-
+                if swarm.best is None or part.fitness.values[0] < swarm.bestfit.values[0]:
+                    swarm.best = toolbox.clone(part)
+                    swarm.bestfit.values = part.fitness.values
+                    swarm.no_improvement_iters = 0
+                    print("****************UPDATED SWARM BESTFIT WITH NEW BEST PARTICLE****************")
+                else:
+                    swarm.no_improvement_iters += 1
+                    print("No improvement in swarm bestfit.")
+                    
         best_fitness_in_population = min(swarm.bestfit.values[0] for swarm in population if swarm.bestfit.values)
         print("Best fitness: ", best_fitness_in_population)
         if best_fitness_in_population < best_global_fitness:
@@ -663,17 +533,9 @@ def main(data, max_iterations=500, verbose=True):
                         print("##############GLOBAL BEST FITNESS UPDATED##############")
                         print(f"Global best updated at iteration {iteration + 1} by swarm {swarm_idx + 1}, particle {particle_idx + 1}")
 
-            # Re-evaluate personal bests for particles
-            for swarm in population:
-                for particle in swarm:
-                    # Check if current particle's fitness is better than its personal best
-                    if particle.fitness < particle.bestfit:
-                        particle.best = toolbox.clone(particle)
-                        particle.bestfit = particle.fitness
-
         # Stop if the fitness meets the target of 0 or less
-        if best_global_fitness <= 0:
-            print(f"\nStopping early as target fitness of 0 was reached: {best_global_fitness}")
+        if swarm.bestfit.values[0] <= 0:
+            print(f"\nStopping early as target fitness of 0 was reached: {swarm.bestfit.values[0]}")
             break
 
     # End the timer

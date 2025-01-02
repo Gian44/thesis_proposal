@@ -1,1 +1,2 @@
-implement Change Detection and Quantum Particles
+Ask the difference between the implementation 
+of the convertQuantum in my code and the one in MPB

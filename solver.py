@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 from config import *
-from multiswarm import main as multiswarm_optimization
+from multiswarm3 import main as multiswarm_optimization
 from initialize_population2 import assign_courses 
 
 
